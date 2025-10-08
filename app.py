@@ -299,6 +299,14 @@ def init_db():
     )""")
     conn.commit()
 
+    # Seed default settings (idempotent)
+    try:
+        c.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('auto_restore_enabled','true')")
+        # Could add future defaults here
+        conn.commit()
+    except Exception:
+        pass
+
     # ensure at least one admin exists (seed)
     c.execute("SELECT COUNT(*) as cnt FROM users")
     row = c.fetchone()
