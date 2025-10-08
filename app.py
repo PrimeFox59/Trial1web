@@ -76,6 +76,7 @@ import sqlite3
 import pandas as pd
 import hashlib
 from datetime import datetime, timedelta, date
+import json
 from dateutil.relativedelta import relativedelta
 import altair as alt
 import io
@@ -436,25 +437,82 @@ def auto_daily_backup(service, folder_id=FOLDER_ID_DEFAULT):
     ok, msg = perform_backup(service, folder_id)
     return ok, msg
 
-# -------------------------
-# Scheduled multi-slot backup (overwrites single file per configuration)
-# -------------------------
-SCHEDULE_SLOTS = [
-    (6, 12, 'slot_morning'),     # 06:00 - <12:00
-    (12, 18, 'slot_afternoon'),  # 12:00 - <18:00
-    (18, 23, 'slot_evening'),    # 18:00 - <23:00
-    (23, 24, 'slot_night_a'),    # 23:00 - <24:00 (part 1)
-    (0, 6, 'slot_night_b'),      # 00:00 - <06:00 (continuation grouped with night)
+"""Scheduled multi-slot backup (overwrites single file per configuration)
+
+Now made DYNAMIC. Admin can edit slot definitions in the GDrive settings UI.
+Slot model stored in app_settings under key 'scheduled_backup_slots_json' as JSON array:
+[
+  {"start": 6, "end": 12, "name": "slot_morning"},
+  {"start": 12, "end": 18, "name": "slot_afternoon"},
+  {"start": 18, "end": 23, "name": "slot_evening"},
+  {"start": 23, "end": 6, "name": "slot_night"}  # wrap past midnight (23:00 -> 06:00)
 ]
+Rules:
+- start & end are integers 0..23 (end may be equal to start? (disallowed) ).
+- If start < end => active for hours start <= H < end.
+- If start > end => wrap past midnight => active if H >= start OR H < end.
+- Names must be unique (used as slot IDs in logs & last-slot tracking).
+"""
+
+DEFAULT_SCHEDULE_SLOTS = [
+    {"start": 6,  "end": 12, "name": "slot_morning"},
+    {"start": 12, "end": 18, "name": "slot_afternoon"},
+    {"start": 18, "end": 23, "name": "slot_evening"},
+    {"start": 23, "end": 6,  "name": "slot_night"},  # wrap
+]
+
+def _validate_slot_struct(slots):
+    if not isinstance(slots, list) or not slots:
+        return False
+    names = set()
+    for s in slots:
+        if not isinstance(s, dict):
+            return False
+        if 'start' not in s or 'end' not in s or 'name' not in s:
+            return False
+        try:
+            st_h = int(s['start']); en_h = int(s['end'])
+        except Exception:
+            return False
+        if not (0 <= st_h <= 23 and 0 <= en_h <= 23):
+            return False
+        if st_h == en_h:  # zero-length not allowed
+            return False
+        nm = str(s['name']).strip()
+        if not nm or nm in names:
+            return False
+        names.add(nm)
+    return True
+
+def get_schedule_slots():
+    raw = get_setting('scheduled_backup_slots_json')
+    if raw:
+        try:
+            slots = json.loads(raw)
+            if _validate_slot_struct(slots):
+                # Normalize shape (int casting & strip)
+                norm = []
+                for s in slots:
+                    norm.append({
+                        'start': int(s['start']),
+                        'end': int(s['end']),
+                        'name': str(s['name']).strip()
+                    })
+                return norm
+        except Exception:
+            pass
+    return DEFAULT_SCHEDULE_SLOTS
 
 def determine_slot(now_local):
     h = now_local.hour
-    for start_h, end_h, slot in SCHEDULE_SLOTS:
-        if start_h <= h < end_h or (start_h==23 and h==23):
-            # Combine night parts
-            if slot in ('slot_night_a','slot_night_b'):
-                return 'slot_night'
-            return slot
+    for s in get_schedule_slots():
+        st_h = s['start']; en_h = s['end']
+        if st_h < en_h:
+            if st_h <= h < en_h:
+                return s['name']
+        else:  # wrap
+            if h >= st_h or h < en_h:
+                return s['name']
     return 'slot_unknown'
 
 def check_scheduled_backup(service, folder_id=FOLDER_ID_DEFAULT):
@@ -2789,6 +2847,37 @@ def page_gdrive():
                 set_setting('scheduled_backup_enabled', 'true' if enable_toggle else 'false')
                 set_setting('scheduled_backup_filename', new_name.strip() or 'scheduled_backup.sqlite')
                 st.success("Pengaturan jadwal disimpan.")
+            # --- Dynamic Slot Editor ---
+            with st.expander("🕒 Edit Slot Jadwal (Advanced)", expanded=False):
+                st.markdown("Masukkan definisi slot dalam format JSON array. Contoh:")
+                st.code('[{"start":6,"end":12,"name":"slot_morning"},\n {"start":12,"end":18,"name":"slot_afternoon"},\n {"start":18,"end":23,"name":"slot_evening"},\n {"start":23,"end":6,"name":"slot_night"}]')
+                current_slots = get_schedule_slots()
+                slot_json_default = json.dumps(current_slots, indent=2)
+                slot_json_input = st.text_area("Definisi Slot JSON", value=slot_json_default, height=180, key='slot_json_editor')
+                col_se1, col_se2 = st.columns([1,2])
+                with col_se1:
+                    if st.button("Simpan Slot"):
+                        try:
+                            parsed = json.loads(slot_json_input)
+                            if _validate_slot_struct(parsed):
+                                set_setting('scheduled_backup_slots_json', json.dumps(parsed))
+                                st.success("Slot jadwal tersimpan.")
+                            else:
+                                st.error("Struktur slot tidak valid. Pastikan field start,end,name unik dan rentang benar.")
+                        except Exception as e:
+                            st.error(f"JSON tidak valid: {e}")
+                with col_se2:
+                    if st.button("Reset ke Default"):
+                        set_setting('scheduled_backup_slots_json', json.dumps(DEFAULT_SCHEDULE_SLOTS))
+                        st.info("Slot dikembalikan ke default.")
+                # Preview table
+                try:
+                    preview_slots = get_schedule_slots()
+                    if preview_slots:
+                        prev_df = pd.DataFrame(preview_slots)
+                        st.dataframe(prev_df, use_container_width=True, hide_index=True)
+                except Exception:
+                    pass
             last_slot = get_setting('scheduled_backup_last_slot', '-')
             last_date = get_setting('scheduled_backup_last_date', '-')
             st.caption(f"Slot terakhir: {last_slot} pada {last_date}")
