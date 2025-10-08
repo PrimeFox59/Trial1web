@@ -2882,7 +2882,7 @@ def page_gdrive():
                     for ridx in sorted(to_remove_indexes, reverse=True):
                         if 0 <= ridx < len(slots_state):
                             slots_state.pop(ridx)
-                    st.experimental_rerun()
+                    st.rerun()
 
                 st.markdown("**Tambah Slot Baru**")
                 col_new1, col_new2, col_new3, col_new4 = st.columns([1,1,2,0.8])
@@ -2899,7 +2899,7 @@ def page_gdrive():
                     else:
                         slots_state.append({'start': int(new_start), 'end': int(new_end), 'name': new_name.strip()})
                         st.success('Slot ditambahkan.')
-                        st.experimental_rerun()
+                        st.rerun()
 
                 # Validasi overlap & struktur sebelum simpan
                 def _hours_covered(slot):
@@ -2938,7 +2938,7 @@ def page_gdrive():
                         st.session_state.slot_editor_state = DEFAULT_SCHEDULE_SLOTS.copy()
                         set_setting('scheduled_backup_slots_json', json.dumps(DEFAULT_SCHEDULE_SLOTS))
                         st.info('Slot dikembalikan ke default.')
-                        st.experimental_rerun()
+                        st.rerun()
                 with export_col:
                     if st.button('📄 Lihat JSON', key='export_slots_btn'):
                         st.code(json.dumps(slots_state, indent=2))
