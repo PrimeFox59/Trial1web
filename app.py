@@ -297,12 +297,25 @@ def init_db():
         key TEXT PRIMARY KEY,
         value TEXT
     )""")
+    # data_db flag table: single row (id=1). Column db: 0 = need restore, 1 = already restored/okay
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS data_db (
+        id INTEGER PRIMARY KEY CHECK (id=1),
+        db INTEGER
+    )""")
     conn.commit()
 
     # Seed default settings (idempotent)
     try:
         c.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('auto_restore_enabled','true')")
         # Could add future defaults here
+        conn.commit()
+    except Exception:
+        pass
+
+    # Seed data_db flag row (idempotent) -> default 0 (trigger restore on first run)
+    try:
+        c.execute("INSERT OR IGNORE INTO data_db (id, db) VALUES (1, 0)")
         conn.commit()
     except Exception:
         pass
@@ -611,6 +624,42 @@ def attempt_auto_restore_if_seed(service, folder_id=FOLDER_ID_DEFAULT):
         return True, f'Restored from {fname}'
     except Exception as e:
         return False, f'Restore failed: {e}'
+
+# -------------------------
+# Restore logic using data_db flag (db=0 -> auto restore then set to 1)
+# -------------------------
+def attempt_restore_using_data_db(service, folder_id=FOLDER_ID_DEFAULT):
+    """Logika baru sesuai permintaan:
+    Table data_db (id=1, db INTEGER)
+      - Jika db == 0: otomatis restore dari backup terbaru di Drive -> jika sukses set db=1
+      - Jika db == 1: tidak melakukan apa-apa.
+    Return (ok:bool, message:str)
+    """
+    try:
+        row = fetchone("SELECT db FROM data_db WHERE id=1")
+    except Exception:
+        return False, 'data_db table unavailable'
+    if not row:
+        return False, 'data_db row missing'
+    flag = row.get('db')
+    if flag != 0:
+        return False, 'data_db flag already 1'
+    latest = _pick_latest_drive_backup_file(service, folder_id)
+    if not latest:
+        return False, 'No backup file on Drive to restore'
+    fid = latest.get('id'); fname = latest.get('name')
+    try:
+        data = download_file_bytes(service, fid)
+        if not data.startswith(b'SQLite format 3\x00'):
+            return False, 'Invalid sqlite header (data_db)'
+        with open(DB_PATH, 'wb') as f:
+            f.write(data)
+        execute("UPDATE data_db SET db=1 WHERE id=1")
+        set_setting('auto_restore_last_file', fname)
+        set_setting('auto_restore_last_time', datetime.utcnow().isoformat())
+        return True, f'data_db restore OK from {fname}'
+    except Exception as e:
+        return False, f'data_db restore failed: {e}'
 
 # -------------------------
 # Google Drive Helper Functions
@@ -3238,15 +3287,24 @@ def main():
         if user.get('role') == 'admin' and 'auto_restore_done' not in st.session_state:
             try:
                 service_ar, _ = build_drive_service()
-                ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
-                if ok_ar:
-                    st.sidebar.success(f"Auto-Restore: {msg_ar}")
+                # FIRST: new data_db flag based restore
+                ok_flag, msg_flag = attempt_restore_using_data_db(service_ar, FOLDER_ID_DEFAULT)
+                if ok_flag:
+                    st.sidebar.success(f"Flag-Restore: {msg_flag}")
                     st.session_state['auto_restore_done'] = True
-                    # Rerun so restored DB is used for subsequent logic (including daily backup)
                     st.rerun()
                 else:
-                    st.sidebar.caption(f"Auto-Restore: {msg_ar}")
-                    st.session_state['auto_restore_done'] = True
+                    if 'already' not in msg_flag.lower():
+                        st.sidebar.caption(f"Flag-Restore: {msg_flag}")
+                    # THEN: legacy heuristic restore (seed DB) only if flag restore didn't run
+                    ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
+                    if ok_ar:
+                        st.sidebar.success(f"Auto-Restore: {msg_ar}")
+                        st.session_state['auto_restore_done'] = True
+                        st.rerun()
+                    else:
+                        st.sidebar.caption(f"Auto-Restore: {msg_ar}")
+                        st.session_state['auto_restore_done'] = True
             except Exception as e:
                 st.sidebar.caption(f"Auto-Restore Err: {e}")
                 st.session_state['auto_restore_done'] = True
