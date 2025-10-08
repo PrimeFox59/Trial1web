@@ -3234,20 +3234,7 @@ def main():
         st.sidebar.markdown(f"**Role:** {user['role'].capitalize()}")
         st.sidebar.markdown("---")
 
-        # Auto backup harian dijalankan sekali per sesi untuk admin
-        if user.get('role') == 'admin' and 'auto_backup_checked' not in st.session_state:
-            try:
-                service_ab, _ = build_drive_service()
-                ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
-                if ok_ab:
-                    st.sidebar.success(f"Auto Backup: {msg_ab}")
-                else:
-                    st.sidebar.info(f"Auto Backup: {msg_ab}")
-            except Exception as e:
-                st.sidebar.warning(f"Auto Backup gagal: {e}")
-            st.session_state['auto_backup_checked'] = True
-
-        # Auto-restore attempt (only once per session, admin)
+        # 1. Auto-restore attempt (only once per session, admin) BEFORE any auto-backup
         if user.get('role') == 'admin' and 'auto_restore_done' not in st.session_state:
             try:
                 service_ar, _ = build_drive_service()
@@ -3255,13 +3242,31 @@ def main():
                 if ok_ar:
                     st.sidebar.success(f"Auto-Restore: {msg_ar}")
                     st.session_state['auto_restore_done'] = True
-                    # Force rerun so subsequent logic uses restored DB
+                    # Rerun so restored DB is used for subsequent logic (including daily backup)
                     st.rerun()
                 else:
                     st.sidebar.caption(f"Auto-Restore: {msg_ar}")
+                    st.session_state['auto_restore_done'] = True
             except Exception as e:
                 st.sidebar.caption(f"Auto-Restore Err: {e}")
                 st.session_state['auto_restore_done'] = True
+
+        # 2. Auto backup harian (skip if DB still dianggap fresh/seed untuk mencegah backup kosong)
+        if user.get('role') == 'admin' and 'auto_backup_checked' not in st.session_state:
+            try:
+                # Skip if still fresh (akan dijalankan setelah ada aktivitas/restore manual nanti)
+                if _is_probably_fresh_seed_db():
+                    st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
+                else:
+                    service_ab, _ = build_drive_service()
+                    ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
+                    if ok_ab:
+                        st.sidebar.success(f"Auto Backup: {msg_ab}")
+                    else:
+                        st.sidebar.caption(f"Auto Backup: {msg_ab}")
+            except Exception as e:
+                st.sidebar.caption(f"Auto Backup Err: {e}")
+            st.session_state['auto_backup_checked'] = True
 
         if st.sidebar.button("📊 Dashboard", use_container_width=True, type="secondary"):
             st.session_state.page = "Dashboard"
