@@ -2849,35 +2849,111 @@ def page_gdrive():
                 st.success("Pengaturan jadwal disimpan.")
             # --- Dynamic Slot Editor ---
             with st.expander("🕒 Edit Slot Jadwal (Advanced)", expanded=False):
-                st.markdown("Masukkan definisi slot dalam format JSON array. Contoh:")
-                st.code('[{"start":6,"end":12,"name":"slot_morning"},\n {"start":12,"end":18,"name":"slot_afternoon"},\n {"start":18,"end":23,"name":"slot_evening"},\n {"start":23,"end":6,"name":"slot_night"}]')
-                current_slots = get_schedule_slots()
-                slot_json_default = json.dumps(current_slots, indent=2)
-                slot_json_input = st.text_area("Definisi Slot JSON", value=slot_json_default, height=180, key='slot_json_editor')
-                col_se1, col_se2 = st.columns([1,2])
-                with col_se1:
-                    if st.button("Simpan Slot"):
-                        try:
-                            parsed = json.loads(slot_json_input)
-                            if _validate_slot_struct(parsed):
-                                set_setting('scheduled_backup_slots_json', json.dumps(parsed))
-                                st.success("Slot jadwal tersimpan.")
+                st.markdown("""
+                Atur slot jadwal backup tanpa perlu menulis JSON. Setiap slot menentukan rentang jam lokal (0-23).\
+                Jika Start > End maka dianggap melewati tengah malam (wrap). Contoh: 23 -> 6.\
+                Tidak boleh ada dua slot yang saling tumpang tindih pada jam yang sama.\
+                """)
+                hours = list(range(24))
+                # Ambil slot saat ini dari setting / default
+                if 'slot_editor_state' not in st.session_state:
+                    st.session_state.slot_editor_state = get_schedule_slots()
+                slots_state = st.session_state.slot_editor_state
+
+                # Tampilkan form per slot
+                to_remove_indexes = []
+                for idx, slot_obj in enumerate(slots_state):
+                    with st.container():
+                        c1,c2,c3,c4 = st.columns([1,1,2,0.6])
+                        with c1:
+                            slots_state[idx]['start'] = c1.selectbox(
+                                'Start', hours, index=hours.index(int(slot_obj['start'])), key=f'slot_start_{idx}')
+                        with c2:
+                            slots_state[idx]['end'] = c2.selectbox(
+                                'End', hours, index=hours.index(int(slot_obj['end'])), key=f'slot_end_{idx}')
+                        with c3:
+                            slots_state[idx]['name'] = c3.text_input('Nama Slot', value=slot_obj['name'], key=f'slot_name_{idx}')
+                        with c4:
+                            if st.button('🗑️', key=f'del_slot_{idx}'):
+                                to_remove_indexes.append(idx)
+                    st.markdown("")
+                # Hapus slot yang diminta
+                if to_remove_indexes:
+                    for ridx in sorted(to_remove_indexes, reverse=True):
+                        if 0 <= ridx < len(slots_state):
+                            slots_state.pop(ridx)
+                    st.experimental_rerun()
+
+                st.markdown("**Tambah Slot Baru**")
+                col_new1, col_new2, col_new3, col_new4 = st.columns([1,1,2,0.8])
+                new_start = col_new1.selectbox('Start', hours, key='new_slot_start')
+                new_end = col_new2.selectbox('End', hours, index=hours.index((new_start+1) % 24), key='new_slot_end')
+                new_name = col_new3.text_input('Nama Slot', key='new_slot_name', placeholder='misal: slot_dawn')
+                if col_new4.button('➕ Tambah'):
+                    if new_name.strip() == '':
+                        st.error('Nama slot tidak boleh kosong.')
+                    elif any(s['name'] == new_name.strip() for s in slots_state):
+                        st.error('Nama slot harus unik.')
+                    elif new_start == new_end:
+                        st.error('Start dan End tidak boleh sama (durasi 0).')
+                    else:
+                        slots_state.append({'start': int(new_start), 'end': int(new_end), 'name': new_name.strip()})
+                        st.success('Slot ditambahkan.')
+                        st.experimental_rerun()
+
+                # Validasi overlap & struktur sebelum simpan
+                def _hours_covered(slot):
+                    st_h = int(slot['start']); en_h = int(slot['end'])
+                    if st_h < en_h:
+                        return list(range(st_h, en_h))
+                    else:  # wrap
+                        return list(range(st_h,24)) + list(range(0,en_h))
+
+                def _check_overlaps(slots):
+                    hour_map = {}  # hour -> slot names
+                    for s in slots:
+                        for h in _hours_covered(s):
+                            hour_map.setdefault(h, set()).add(s['name'])
+                    conflicts = {h:n for h,n in hour_map.items() if len(n) > 1}
+                    return conflicts
+
+                save_col, reset_col, export_col = st.columns([1,1,1])
+                with save_col:
+                    if st.button('💾 Simpan Slot Jadwal', key='save_slots_btn'):
+                        # Basic structure validation
+                        if not _validate_slot_struct(slots_state):
+                            st.error('Struktur slot tidak valid (nama unik, rentang jam 0-23, start != end).')
+                        else:
+                            conflicts = _check_overlaps(slots_state)
+                            if conflicts:
+                                conflict_msgs = []
+                                for h, names in sorted(conflicts.items()):
+                                    conflict_msgs.append(f"Jam {h}: {' , '.join(sorted(names))}")
+                                st.error('Terdapat tumpang tindih slot:\n' + '\n'.join(conflict_msgs))
                             else:
-                                st.error("Struktur slot tidak valid. Pastikan field start,end,name unik dan rentang benar.")
-                        except Exception as e:
-                            st.error(f"JSON tidak valid: {e}")
-                with col_se2:
-                    if st.button("Reset ke Default"):
+                                set_setting('scheduled_backup_slots_json', json.dumps(slots_state))
+                                st.success('Slot jadwal tersimpan ke konfigurasi.')
+                with reset_col:
+                    if st.button('♻️ Reset Default', key='reset_slots_btn'):
+                        st.session_state.slot_editor_state = DEFAULT_SCHEDULE_SLOTS.copy()
                         set_setting('scheduled_backup_slots_json', json.dumps(DEFAULT_SCHEDULE_SLOTS))
-                        st.info("Slot dikembalikan ke default.")
-                # Preview table
-                try:
-                    preview_slots = get_schedule_slots()
-                    if preview_slots:
-                        prev_df = pd.DataFrame(preview_slots)
-                        st.dataframe(prev_df, use_container_width=True, hide_index=True)
-                except Exception:
-                    pass
+                        st.info('Slot dikembalikan ke default.')
+                        st.experimental_rerun()
+                with export_col:
+                    if st.button('📄 Lihat JSON', key='export_slots_btn'):
+                        st.code(json.dumps(slots_state, indent=2))
+
+                # Preview ringkas
+                if slots_state:
+                    st.markdown("**Preview Slot Aktif**")
+                    prev_df = pd.DataFrame(slots_state)
+                    # Durasi jam (approx) hanya untuk info
+                    def _dur(srow):
+                        st_h=int(srow['start']); en_h=int(srow['end'])
+                        return (en_h-st_h) if st_h < en_h else ((24-st_h)+en_h)
+                    prev_df['duration_h'] = prev_df.apply(_dur, axis=1)
+                    st.dataframe(prev_df[['name','start','end','duration_h']], use_container_width=True, hide_index=True)
+                st.caption("Catatan: Backup akan dijalankan sekali per slot saat ada interaksi admin (page refresh / navigasi).")
             last_slot = get_setting('scheduled_backup_last_slot', '-')
             last_date = get_setting('scheduled_backup_last_date', '-')
             st.caption(f"Slot terakhir: {last_slot} pada {last_date}")
