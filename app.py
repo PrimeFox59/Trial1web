@@ -12,6 +12,8 @@ from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 # --------------------------------------------------
 # Konfigurasi
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+FOLDER_ID_DEFAULT = "19pvCnUBhriYQdx8zBvY_3_BXvsjrK6eD"
+folder_id = FOLDER_ID_DEFAULT
 
 st.set_page_config(page_title="Streamlit + Google Drive Lokal", layout="wide")
 
@@ -106,27 +108,10 @@ st.title("📂 Streamlit + Google Drive (Lokal Dev Version)")
 
 service, sa_email = build_drive_service()
 
-with st.expander("Instruksi"):
-    st.markdown(
-        """
-        1. Pastikan file `service_account.json` ada di folder project.
-        2. **WAJIB:** Gunakan folder dari Shared Drive (Drive Bersama), BUKAN dari My Drive pribadi!
-        3. Share folder Shared Drive ke email service account berikut:
-        """
-    )
-    st.code(sa_email)
-    st.markdown(
-        """
-        4. Copy-paste **Folder ID** dari Shared Drive ke input di bawah ini.
-        
-        > Service Account TIDAK BISA upload ke My Drive. Hanya bisa ke Shared Drive yang sudah di-share ke Service Account.
-        """
-    )
 
-FOLDER_ID_DEFAULT = "19pvCnUBhriYQdx8zBvY_3_BXvsjrK6eD"
-folder_id = FOLDER_ID_DEFAULT
 
-tabs = st.tabs(["List", "Create record", "Upload file", "Edit record", "Download", "Delete"])
+
+tabs = st.tabs(["List", "Upload file", "Download", "Delete"])
 
 # --------------------------------------------------
 # Tab List
@@ -156,26 +141,7 @@ with tabs[0]:
         st.dataframe(df[["name", "id", "mimeType", "createdTime", "modifiedTime", "size"]])
 
 # --------------------------------------------------
-# Tab Create record
 with tabs[1]:
-    st.header("Buat Record JSON")
-    title = st.text_input("Judul", value="record")
-    description = st.text_area("Deskripsi")
-    if st.button("Buat JSON Record"):
-        record = {
-            "title": title,
-            "description": description,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-        payload = json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8")
-        name = f"record_{int(time.time())}_{title}.json"
-        fid = upload_bytes(service, folder_id, name, payload, mimetype="application/json")
-        st.success(f"Record berhasil dibuat (ID: {fid})")
-        st.json(record)
-
-# --------------------------------------------------
-# Tab Upload file
-with tabs[2]:
     st.header("Upload File")
     uploaded = st.file_uploader("Pilih file", type=None)
     if uploaded and st.button("Upload ke Drive"):
@@ -186,28 +152,7 @@ with tabs[2]:
         st.success(f"File terupload ke Drive (ID: {fid})")
 
 # --------------------------------------------------
-# Tab Edit record
-with tabs[3]:
-    st.header("Edit Record JSON")
-    files_all = list_files_in_folder(service, folder_id)
-    json_files = [f for f in files_all if f["name"].lower().endswith(".json")]
-    if not json_files:
-        st.info("Tidak ada file JSON di folder.")
-    else:
-        sel = st.selectbox("Pilih file JSON", [f"{f['name']} ({f['id']})" for f in json_files])
-        if sel and st.button("Load file"):
-            fid = sel.split("(")[-1].strip(")")
-            raw = download_file_bytes(service, fid)
-            obj = json.loads(raw.decode("utf-8"))
-            edited = st.text_area("Edit JSON", value=json.dumps(obj, indent=2, ensure_ascii=False), height=300)
-            if st.button("Simpan perubahan"):
-                newobj = json.loads(edited)
-                update_file_bytes(service, fid, json.dumps(newobj, indent=2, ensure_ascii=False).encode("utf-8"))
-                st.success("File berhasil diupdate")
-
-# --------------------------------------------------
-# Tab Download
-with tabs[4]:
+with tabs[2]:
     st.header("Download File")
     files_all = list_files_in_folder(service, folder_id)
     if files_all:
@@ -221,8 +166,7 @@ with tabs[4]:
         st.info("Folder kosong.")
 
 # --------------------------------------------------
-# Tab Delete
-with tabs[5]:
+with tabs[3]:
     st.header("Hapus File")
     files_all = list_files_in_folder(service, folder_id)
     if files_all:
