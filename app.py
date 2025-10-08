@@ -761,6 +761,16 @@ def page_gdrive():
                         st.info(msgf)
                 except Exception as e:
                     st.error(f"Gagal paksa backup: {e}")
+
+    # Audit Log Tab
+    with tabs[5]:
+        st.subheader('📝 Audit Log Login')
+        logs = fetchall("SELECT audit_logs.timestamp, users.name, users.email FROM audit_logs JOIN users ON audit_logs.user_id = users.id WHERE audit_logs.action='LOGIN' ORDER BY audit_logs.id DESC LIMIT 50")
+        if not logs:
+            st.info('Belum ada catatan login.')
+        else:
+            df = pd.DataFrame(logs)
+            st.dataframe(df, use_container_width=True, hide_index=True)
         try:
             files = list_files_in_folder(service, folder_id)
         except Exception as e:
