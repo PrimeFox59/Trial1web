@@ -2499,20 +2499,45 @@ Aplikasi ini membantu Anda membuat, mengelola, dan memantau kemajuan Project Cha
 def main():
     # --- Export DB to Google Drive ---
     def export_db_to_gdrive():
+        import json
+        import base64
+        import time
+        import jwt
+        import requests
         db_path = DB_PATH
         # Read DB file as bytes
         with open(db_path, "rb") as f:
             db_bytes = f.read()
-        # Prepare upload to Google Drive via API
-        # Ambil credentials dari st.secrets["connections"]
-        gdrive_token = st.secrets["connections"].get("gdrive_token")
-        if not gdrive_token:
-            st.error("GDrive token tidak ditemukan di st.secrets['connections'].")
+        # Ambil credentials dari st.secrets['connections.gdrive']
+        creds = st.secrets.get("connections.gdrive")
+        if not creds:
+            st.error("Service account GDrive belum diatur di st.secrets['connections.gdrive'].")
             return
-        headers = {
-            "Authorization": f"Bearer {gdrive_token}"
+        sa_email = creds["client_email"]
+        sa_key = creds["private_key"]
+        token_uri = creds["token_uri"]
+        # 1. Buat JWT assertion
+        now = int(time.time())
+        payload = {
+            "iss": sa_email,
+            "scope": "https://www.googleapis.com/auth/drive.file",
+            "aud": token_uri,
+            "exp": now + 3600,
+            "iat": now
         }
-        # Metadata file
+        additional_headers = {"kid": creds["private_key_id"]}
+        assertion = jwt.encode(payload, sa_key, algorithm="RS256", headers=additional_headers)
+        # 2. Exchange JWT for access token
+        resp = requests.post(token_uri, data={
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion
+        })
+        if resp.status_code != 200:
+            st.error(f"Gagal mendapatkan access token: {resp.text}")
+            return
+        access_token = resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+        # 3. Upload file ke GDrive
         from datetime import datetime
         nowstr = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"project_charter_{nowstr}.db"
@@ -2521,12 +2546,12 @@ def main():
             "parents": [GDRIVE_FOLDER_ID]
         }
         files = {
-            'data': ('metadata', io.BytesIO(bytes(str(metadata), 'utf-8')), 'application/json; charset=UTF-8'),
+            'metadata': (None, json.dumps(metadata), 'application/json; charset=UTF-8'),
             'file': (filename, io.BytesIO(db_bytes), 'application/octet-stream')
         }
         upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
         response = requests.post(upload_url, headers=headers, files=files)
-        if response.status_code == 200 or response.status_code == 201:
+        if response.status_code in (200, 201):
             st.success(f"Database berhasil diupload ke Google Drive sebagai {filename}")
         else:
             st.error(f"Gagal upload ke Google Drive: {response.text}")
