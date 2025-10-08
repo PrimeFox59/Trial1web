@@ -2517,6 +2517,7 @@ def main():
             sa_info["private_key"] = sa_info["private_key"].replace('\\n', '\n')
         creds = service_account.Credentials.from_service_account_info(sa_info, scopes=["https://www.googleapis.com/auth/drive"])
         service = build("drive", "v3", credentials=creds)
+        sa_email = creds.service_account_email
         from datetime import datetime
         nowstr = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"project_charter_{nowstr}.db"
@@ -2526,7 +2527,22 @@ def main():
             created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
             st.success(f"Database berhasil diupload ke Google Drive sebagai {filename} (ID: {created.get('id')})")
         except Exception as e:
-            st.error(f"Gagal upload ke Google Drive: {e}")
+            if 'storageQuotaExceeded' in str(e) or 'cannot upload to My Drive' in str(e) or 'parents' in str(e):
+                st.error("GAGAL UPLOAD: Service Account tidak bisa upload ke My Drive.\n\nPastikan folder ID adalah Shared Drive (Drive Bersama) dan sudah di-share ke email berikut:")
+                st.code(sa_email)
+                st.info("Buka Google Drive > Shared Drive > klik kanan folder > Bagikan > tambahkan email di atas sebagai Editor.")
+            else:
+                st.error(f"Gagal upload ke Google Drive: {e}")
+
+    # Tampilkan instruksi dan email service account di sidebar
+    if "gdrive" in st.secrets.get("connections", {}):
+        sa_info = dict(st.secrets["connections"]["gdrive"])
+        sa_email = sa_info.get("client_email", "-")
+        st.sidebar.markdown("**Google Drive Export Info**")
+        st.sidebar.markdown("- Folder ID: "+GDRIVE_FOLDER_ID)
+        st.sidebar.markdown("- Service Account:")
+        st.sidebar.code(sa_email)
+        st.sidebar.markdown("- Pastikan folder Shared Drive sudah di-share ke email di atas!")
 
     # Tombol di sidebar
     st.sidebar.markdown("---")
