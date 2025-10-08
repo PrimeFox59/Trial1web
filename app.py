@@ -123,10 +123,8 @@ with st.expander("Instruksi"):
         """
     )
 
-folder_id = st.text_input("Masukkan Google Drive Folder ID:")
-if not folder_id:
-    st.warning("Masukkan Folder ID dulu (contoh: 1k8x-xxx...)")
-    st.stop()
+FOLDER_ID_DEFAULT = "19pvCnUBhriYQdx8zBvY_3_BXvsjrK6eD"
+folder_id = FOLDER_ID_DEFAULT
 
 tabs = st.tabs(["List", "Create record", "Upload file", "Edit record", "Download", "Delete"])
 
