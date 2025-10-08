@@ -2503,36 +2503,54 @@ Aplikasi ini membantu Anda membuat, mengelola, dan memantau kemajuan Project Cha
 def main():
     # --- Export DB to Google Drive ---
     def export_db_to_gdrive():
-        db_path = DB_PATH
-        # Read DB file as bytes
-        with open(db_path, "rb") as f:
-            db_bytes = f.read()
-        # Ambil credentials dari st.secrets (TOML style)
-        if "gdrive" not in st.secrets["connections"]:
+        import os
+        gdrive_secrets = st.secrets.get("connections", {}).get("gdrive", {})
+        if not gdrive_secrets:
             st.error("Service account GDrive tidak ditemukan di st.secrets['connections']['gdrive']!")
             return
-        sa_info = dict(st.secrets["connections"]["gdrive"])
-        # private_key multiline string, ensure triple quotes
+        sa_info = dict(gdrive_secrets)
         if "private_key" in sa_info and isinstance(sa_info["private_key"], str) and not sa_info["private_key"].startswith("-----BEGIN"):
             sa_info["private_key"] = sa_info["private_key"].replace('\\n', '\n')
         creds = service_account.Credentials.from_service_account_info(sa_info, scopes=["https://www.googleapis.com/auth/drive"])
         service = build("drive", "v3", credentials=creds)
         sa_email = creds.service_account_email
+        db_path = DB_PATH
+        if not os.path.exists(db_path):
+            st.error(f"Database file tidak ditemukan: {db_path}")
+            return
         from datetime import datetime
         nowstr = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"project_charter_{nowstr}.db"
-        file_metadata = {"name": filename, "parents": [GDRIVE_FOLDER_ID]}
+        # Cek folder ID valid dan bisa diakses
+        folder_id = GDRIVE_FOLDER_ID
+        try:
+            folder = service.files().get(fileId=folder_id, fields="id, name, mimeType, permissions, driveId").execute()
+            if folder.get("mimeType") != "application/vnd.google-apps.folder":
+                st.error("ID yang diberikan bukan folder Google Drive.")
+                return
+        except Exception as e:
+            st.error(f"Gagal mengakses folder Google Drive dengan ID: {folder_id}. Pastikan folder ada di Shared Drive dan sudah di-share ke service account.\n\nError: {e}")
+            st.info(f"Email service account: {sa_email}")
+            return
+        file_metadata = {"name": filename, "parents": [folder_id]}
+        if folder.get("driveId"):
+            file_metadata["driveId"] = folder["driveId"]
+            file_metadata["supportsAllDrives"] = True
+        with open(db_path, "rb") as f:
+            db_bytes = f.read()
         media = MediaIoBaseUpload(io.BytesIO(db_bytes), mimetype="application/octet-stream", resumable=True)
         try:
-            created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+            created = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
             st.success(f"Database berhasil diupload ke Google Drive sebagai {filename} (ID: {created.get('id')})")
         except Exception as e:
-            if 'storageQuotaExceeded' in str(e) or 'cannot upload to My Drive' in str(e) or 'parents' in str(e):
-                st.error("GAGAL UPLOAD: Service Account tidak bisa upload ke My Drive.\n\nPastikan folder ID adalah Shared Drive (Drive Bersama) dan sudah di-share ke email berikut:")
-                st.code(sa_email)
-                st.info("Buka Google Drive > Shared Drive > klik kanan folder > Bagikan > tambahkan email di atas sebagai Editor.")
-            else:
-                st.error(f"Gagal upload ke Google Drive: {e}")
+            st.error(f"Gagal upload ke Google Drive.\n\nKemungkinan penyebab:\n- Folder ID salah/tidak ditemukan\n- Folder belum di-share ke service account\n- Folder bukan di Shared Drive\n\nError detail: {e}")
+            st.info(f"Email service account: {sa_email}")
+            return
 
     # Tampilkan instruksi dan email service account di sidebar
     if "gdrive" in st.secrets.get("connections", {}):
