@@ -290,6 +290,12 @@ def init_db():
         status TEXT, -- SUCCESS / FAILED
         message TEXT
     )""")
+    # app_settings (key-value config)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
     conn.commit()
 
     # ensure at least one admin exists (seed)
@@ -372,6 +378,19 @@ def execute(query, params=()):
     conn.close()
     return last
 
+def get_setting(key, default=None):
+    row = fetchone("SELECT value FROM app_settings WHERE key=?", (key,))
+    if not row:
+        return default
+    return row.get('value')
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+    conn.commit()
+    conn.close()
+
 # -------------------------
 # Backup helpers
 # -------------------------
@@ -416,6 +435,72 @@ def auto_daily_backup(service, folder_id=FOLDER_ID_DEFAULT):
     # Jalankan backup
     ok, msg = perform_backup(service, folder_id)
     return ok, msg
+
+# -------------------------
+# Scheduled multi-slot backup (overwrites single file per configuration)
+# -------------------------
+SCHEDULE_SLOTS = [
+    (6, 12, 'slot_morning'),     # 06:00 - <12:00
+    (12, 18, 'slot_afternoon'),  # 12:00 - <18:00
+    (18, 23, 'slot_evening'),    # 18:00 - <23:00
+    (23, 24, 'slot_night_a'),    # 23:00 - <24:00 (part 1)
+    (0, 6, 'slot_night_b'),      # 00:00 - <06:00 (continuation grouped with night)
+]
+
+def determine_slot(now_local):
+    h = now_local.hour
+    for start_h, end_h, slot in SCHEDULE_SLOTS:
+        if start_h <= h < end_h or (start_h==23 and h==23):
+            # Combine night parts
+            if slot in ('slot_night_a','slot_night_b'):
+                return 'slot_night'
+            return slot
+    return 'slot_unknown'
+
+def check_scheduled_backup(service, folder_id=FOLDER_ID_DEFAULT):
+    """If scheduling enabled, ensure one backup per defined slot. Overwrite single file name each time.
+    Settings keys used:
+      scheduled_backup_enabled: 'true'/'false'
+      scheduled_backup_filename: base file name (default 'scheduled_backup.sqlite')
+      scheduled_backup_last_slot: last slot string done
+    """
+    enabled = get_setting('scheduled_backup_enabled', 'false') == 'true'
+    if not enabled:
+        return False, 'Scheduled backup disabled'
+    base_name = get_setting('scheduled_backup_filename', 'scheduled_backup.sqlite') or 'scheduled_backup.sqlite'
+    # Determine local time (assume server already GMT+7 or adjust here if needed)
+    now_local = datetime.now()  # If server timezone != GMT+7 -> adjust with timedelta(hours=offset)
+    slot = determine_slot(now_local)
+    if slot == 'slot_unknown':
+        return False, 'Outside defined slots'
+    last_slot_done = get_setting('scheduled_backup_last_slot')
+    today_tag = date.today().isoformat()
+    last_slot_date = get_setting('scheduled_backup_last_date')
+    composite_last = f"{last_slot_date}:{last_slot_done}" if last_slot_done and last_slot_date else None
+    composite_now = f"{today_tag}:{slot}"
+    if composite_last == composite_now:
+        return False, 'Slot already backed up'
+    # Do backup overwrite single file
+    if not os.path.exists(DB_PATH):
+        return False, 'DB missing'
+    try:
+        with open(DB_PATH,'rb') as f:
+            data = f.read()
+        fid = upload_or_replace(service, folder_id, base_name, data, mimetype='application/x-sqlite3')
+        if fid:
+            set_setting('scheduled_backup_last_slot', slot)
+            set_setting('scheduled_backup_last_date', today_tag)
+            execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
+                    (base_name, fid, 'SUCCESS', f'scheduled {slot}'))
+            return True, f'Scheduled backup OK ({slot}) -> {base_name}'
+        else:
+            execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
+                    (base_name, None, 'FAILED', f'scheduled {slot} upload error'))
+            return False, 'Upload failed'
+    except Exception as e:
+        execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
+                (base_name, None, 'FAILED', f'scheduled {slot} {e}'))
+        return False, f'Error {e}'
 
 # -------------------------
 # Google Drive Helper Functions
@@ -465,6 +550,24 @@ def upload_bytes(service, folder_id, name, data_bytes, mimetype="application/oct
             st.error("Kuota penyimpanan Google Drive penuh untuk service account ini.")
         else:
             st.error(f"Gagal upload: {err_text}")
+        return None
+
+def upload_or_replace(service, folder_id, name, data_bytes, mimetype="application/octet-stream"):
+    """Find a file with same name in folder; if exists update, else create. Return file id or None."""
+    try:
+        query = f"name='{name}' and '{folder_id}' in parents and trashed=false"
+        resp = service.files().list(q=query, spaces='drive', fields='files(id, name)', supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        existing = resp.get('files', [])
+        media = MediaIoBaseUpload(io.BytesIO(data_bytes), mimetype=mimetype, resumable=True)
+        if existing:
+            fid = existing[0]['id']
+            service.files().update(fileId=fid, media_body=media, supportsAllDrives=True).execute()
+            return fid
+        else:
+            file_metadata = {"name": name, "parents": [folder_id]}
+            created = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
+            return created.get('id')
+    except Exception:
         return None
 
 def download_file_bytes(service, file_id):
@@ -2672,6 +2775,32 @@ def page_gdrive():
                 st.markdown("**Riwayat Backup Terbaru:**")
                 for lg in logs:
                     st.markdown(f"- {lg['backup_time']} | {lg['file_name']} | {lg['status']}")
+
+            st.markdown("---")
+            st.markdown("### ⚙️ Pengaturan Scheduled Backup")
+            enabled_flag = get_setting('scheduled_backup_enabled', 'false') == 'true'
+            col_sb1, col_sb2 = st.columns([1,2])
+            with col_sb1:
+                enable_toggle = st.checkbox("Aktifkan Jadwal", value=enabled_flag, key='sched_enable')
+            default_name = get_setting('scheduled_backup_filename', 'scheduled_backup.sqlite') or 'scheduled_backup.sqlite'
+            with col_sb2:
+                new_name = st.text_input("Nama File Backup (overwrite)", value=default_name, key='sched_filename')
+            if st.button("Simpan Pengaturan Jadwal"):
+                set_setting('scheduled_backup_enabled', 'true' if enable_toggle else 'false')
+                set_setting('scheduled_backup_filename', new_name.strip() or 'scheduled_backup.sqlite')
+                st.success("Pengaturan jadwal disimpan.")
+            last_slot = get_setting('scheduled_backup_last_slot', '-')
+            last_date = get_setting('scheduled_backup_last_date', '-')
+            st.caption(f"Slot terakhir: {last_slot} pada {last_date}")
+            if st.button("Paksa Backup Slot Saat Ini"):
+                try:
+                    okf, msgf = check_scheduled_backup(service, folder_id)
+                    if okf:
+                        st.success(msgf)
+                    else:
+                        st.info(msgf)
+                except Exception as e:
+                    st.error(f"Gagal paksa backup: {e}")
         try:
             files = list_files_in_folder(service, folder_id)
         except Exception as e:
@@ -2899,6 +3028,24 @@ def main():
         if user.get('role') == 'admin':
             if st.sidebar.button("⚙️ Admin Panel", use_container_width=True, type="secondary"):
                 st.session_state.page = "Admin Panel"
+
+        # Scheduled multi-slot backup trigger (checked every rerun). Admin only to reduce noise.
+        if user.get('role') == 'admin':
+            if 'scheduled_backup_last_check' not in st.session_state or (datetime.utcnow().timestamp() - st.session_state['scheduled_backup_last_check'] > 60):
+                try:
+                    service_sched, _ = build_drive_service()
+                    ok_sched, msg_sched = check_scheduled_backup(service_sched, FOLDER_ID_DEFAULT)
+                    if ok_sched:
+                        st.sidebar.success(msg_sched)
+                    else:
+                        # only show minimal info if it actually attempted or config off
+                        if 'disabled' in msg_sched.lower():
+                            pass
+                        else:
+                            st.sidebar.caption(f"Scheduled: {msg_sched}")
+                except Exception as e:
+                    st.sidebar.caption(f"Scheduled Err: {e}")
+                st.session_state['scheduled_backup_last_check'] = datetime.utcnow().timestamp()
 
         if st.sidebar.button("🕓 Audit Trail", use_container_width=True, type="secondary"):
             st.session_state.page = "Audit Trail"
