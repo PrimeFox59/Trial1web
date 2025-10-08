@@ -9,7 +9,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # --- 1. KONFIGURASI APLIKASI ---
 # PENTING: Pastikan ID ini berasal dari folder di dalam SHARED DRIVE
 GDRIVE_FOLDER_ID = "19pvCnUBhriYQdx8zBvY_3_BXvsjrK6eD"
-SPREADSHEET_URL = st.secrets["connections"]["gsheets"]["spreadsheet"]
+SPREADSHEET_URL = st.secrets["connections"]
 
 
 def page_audit_trail():
@@ -2559,7 +2559,7 @@ def main():
 
     # Tampilkan instruksi dan email service account di sidebar
     if "gdrive" in st.secrets.get("connections", {}):
-        sa_info = dict(st.secrets["connections"]["gsheets"]["spreadsheet"])
+        sa_info = dict(st.secrets["connections"])
         sa_email = sa_info.get("client_email", "-")
         st.sidebar.markdown("**Google Drive Export Info**")
         st.sidebar.markdown("- Folder ID: "+GDRIVE_FOLDER_ID)
