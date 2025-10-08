@@ -147,6 +147,28 @@ def page_child_projects():
     st.header("🌿 Turunan Project Charter")
     st.markdown("---")
     child_projects = fetchall("SELECT * FROM projects WHERE parent_project_id IS NOT NULL ORDER BY id DESC")
+
+        # --------------------------------------------------
+        # PRE-LOGIN INITIALIZATION: Pastikan restore DB (flag / seed heuristic)
+        # Dilakukan SEBELUM halaman login muncul saat tidak ada user aktif.
+        # --------------------------------------------------
+        if not user:
+            if 'pre_login_restore_done' not in st.session_state:
+                st.title("Initializing Database ...")
+                st.markdown("---")
+                st.info("Memeriksa status database & mencoba restore otomatis dari Google Drive bila diperlukan...")
+                try:
+                    service_pre, _ = build_drive_service()
+                    # Coba restore via flag data_db (db=0)
+                    attempt_restore_using_data_db(service_pre, FOLDER_ID_DEFAULT)
+                    # Coba restore heuristic seed (jika tetap fresh)
+                    attempt_auto_restore_if_seed(service_pre, FOLDER_ID_DEFAULT)
+                except Exception as e:
+                    st.warning(f"Inisialisasi gagal / dilewati: {e}")
+                # Tandai selesai supaya tidak berulang pada rerun berikutnya
+                st.session_state['pre_login_restore_done'] = True
+                # Rerun agar DB hasil restore (jika ada) terpakai bersih sebelum login tampil
+                st.rerun()
     if not child_projects:
         st.info("Belum ada Turunan Project.")
         return
@@ -156,8 +178,26 @@ def page_child_projects():
         parent_item = fetchone("SELECT id, name, group_id FROM items WHERE id=?", (p['parent_project_id'],))
         parent_project = None
         if parent_item:
-            parent_group = fetchone("SELECT project_id FROM groups WHERE id=?", (parent_item['group_id'],))
-            if parent_group:
+            /* Lines 3279-3280 omitted */
+            # (HAPUS blok restore lama: sekarang sudah dilakukan sebelum login)
+            # 2. Auto backup harian (skip if DB still dianggap fresh/seed untuk mencegah backup kosong)
+            if user.get('role') == 'admin' and 'auto_backup_checked' not in st.session_state:
+                try:
+                    if _is_probably_fresh_seed_db():
+                        st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
+                    else:
+                        service_ab, _ = build_drive_service()
+                        ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
+                        if ok_ab:
+                            st.sidebar.success(f"Auto Backup: {msg_ab}")
+                        else:
+                            st.sidebar.caption(f"Auto Backup: {msg_ab}")
+                except Exception as e:
+                    st.sidebar.caption(f"Auto Backup Err: {e}")
+                st.session_state['auto_backup_checked'] = True
+
+            # Navigasi sidebar (tidak berubah)
+            /* Lines 3280-3370 omitted */
                 parent_project = fetchone("SELECT id, name FROM projects WHERE id=?", (parent_group['project_id'],))
         score_month = compute_project_score(p['id'])
         data_rows.append({
@@ -1147,6 +1187,25 @@ def compute_project_score(project_id, start_period=None, end_period=None):
     # cap 0..1
     return max(0.0, min(total, 1.0))
 
+# Status project berdasarkan tanggal dan skor
+def calc_status(project_row, ref_date=None):
+    if not ref_date:
+        ref_date = date.today()
+    try:
+        start = datetime.strptime(project_row['start_date'], "%Y-%m-%d").date()
+        finish = datetime.strptime(project_row['finish_date'], "%Y-%m-%d").date()
+    except Exception:
+        return "Not Started"
+    score = compute_project_score(project_row['id'])
+    if ref_date < start:
+        return "Not Started"
+    if start <= ref_date <= finish:
+        return "Progress"
+    # sudah lewat finish
+    if score is not None and score >= 1.0:
+        return "Done"
+    return "Overdue"
+
 # -------------------------
 # Role checks
 # -------------------------
@@ -1164,27 +1223,9 @@ def require_admin():
         if not u:
             st.session_state.page = "Authentication"
         else:
-            st.session_state.page = "Dashboard"
-        st.rerun()
-
-def calc_status(project_row, ref_date=None):
-    if not ref_date:
-        ref_date = date.today()
-    s = "Not Started"
-    start = datetime.strptime(project_row['start_date'], "%Y-%m-%d").date()
-    finish = datetime.strptime(project_row['finish_date'], "%Y-%m-%d").date()
-    score = compute_project_score(project_row['id'])
-    if ref_date < start:
-        s = "Not Started"
-    elif start <= ref_date <= finish:
-        s = "Progress"
-    else:
-        # after finish
-        if score is not None and score >= 1.0:
-            s = "Done"
-        else:
-            s = "Overdue"
-    return s
+            parent_group = fetchone("SELECT project_id FROM groups WHERE id=?", (parent_item['group_id'],))
+            if parent_group:
+                parent_project = fetchone("SELECT id, name FROM projects WHERE id=?", (parent_group['project_id'],))
 
 def get_pending_users_count():
     return fetchone("SELECT COUNT(*) AS count FROM users WHERE approved=0")['count']
@@ -3267,52 +3308,37 @@ def main():
 
     user = current_user()
 
-    # Logo di sidebar atas
+    # Jika belum login, tampilkan fase restore (sekali) sebelum form login
+    if not user and 'pre_login_restore_done' not in st.session_state:
+        st.title("Initializing Database ...")
+        st.markdown("---")
+        st.info("Mengecek database & mencoba auto-restore (data_db flag / seed heuristic)...")
+        try:
+            service_pre, _ = build_drive_service()
+            attempt_restore_using_data_db(service_pre, FOLDER_ID_DEFAULT)
+            attempt_auto_restore_if_seed(service_pre, FOLDER_ID_DEFAULT)
+        except Exception as e:
+            st.warning(f"Restore otomatis gagal/dilewati: {e}")
+        st.session_state['pre_login_restore_done'] = True
+        st.rerun()
+
+    # Sidebar setelah fase restore
     st.sidebar.image("logo.png", use_container_width=True)
     st.sidebar.title("Navigasi")
 
     if not user:
         if st.sidebar.button("🔐 Login / Register", use_container_width=True):
             st.session_state.page = "Authentication"
-
     else:
-        # Info user
         st.sidebar.markdown(f"**👤 {user['name']}**")
         st.sidebar.markdown(f"✉️ {user['email']}")
         st.sidebar.markdown(f"🏢 {user.get('department','-')}")
         st.sidebar.markdown(f"**Role:** {user['role'].capitalize()}")
         st.sidebar.markdown("---")
 
-        # 1. Auto-restore attempt (only once per session, admin) BEFORE any auto-backup
-        if user.get('role') == 'admin' and 'auto_restore_done' not in st.session_state:
-            try:
-                service_ar, _ = build_drive_service()
-                # FIRST: new data_db flag based restore
-                ok_flag, msg_flag = attempt_restore_using_data_db(service_ar, FOLDER_ID_DEFAULT)
-                if ok_flag:
-                    st.sidebar.success(f"Flag-Restore: {msg_flag}")
-                    st.session_state['auto_restore_done'] = True
-                    st.rerun()
-                else:
-                    if 'already' not in msg_flag.lower():
-                        st.sidebar.caption(f"Flag-Restore: {msg_flag}")
-                    # THEN: legacy heuristic restore (seed DB) only if flag restore didn't run
-                    ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
-                    if ok_ar:
-                        st.sidebar.success(f"Auto-Restore: {msg_ar}")
-                        st.session_state['auto_restore_done'] = True
-                        st.rerun()
-                    else:
-                        st.sidebar.caption(f"Auto-Restore: {msg_ar}")
-                        st.session_state['auto_restore_done'] = True
-            except Exception as e:
-                st.sidebar.caption(f"Auto-Restore Err: {e}")
-                st.session_state['auto_restore_done'] = True
-
-        # 2. Auto backup harian (skip if DB still dianggap fresh/seed untuk mencegah backup kosong)
+        # Auto-backup harian (setelah kemungkinan restore pre-login)
         if user.get('role') == 'admin' and 'auto_backup_checked' not in st.session_state:
             try:
-                # Skip if still fresh (akan dijalankan setelah ada aktivitas/restore manual nanti)
                 if _is_probably_fresh_seed_db():
                     st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
                 else:
@@ -3326,6 +3352,24 @@ def main():
                 st.sidebar.caption(f"Auto Backup Err: {e}")
             st.session_state['auto_backup_checked'] = True
 
+        # Scheduled backup trigger
+        if user.get('role') == 'admin':
+            if 'scheduled_backup_last_check' not in st.session_state or (datetime.utcnow().timestamp() - st.session_state['scheduled_backup_last_check'] > 60):
+                try:
+                    service_sched, _ = build_drive_service()
+                    ok_sched, msg_sched = check_scheduled_backup(service_sched, FOLDER_ID_DEFAULT)
+                    if ok_sched:
+                        st.sidebar.success(msg_sched)
+                    else:
+                        if 'disabled' in msg_sched.lower():
+                            pass
+                        else:
+                            st.sidebar.caption(f"Scheduled: {msg_sched}")
+                except Exception as e:
+                    st.sidebar.caption(f"Scheduled Err: {e}")
+                st.session_state['scheduled_backup_last_check'] = datetime.utcnow().timestamp()
+
+        # Sidebar navigation buttons
         if st.sidebar.button("📊 Dashboard", use_container_width=True, type="secondary"):
             st.session_state.page = "Dashboard"
         if st.sidebar.button("📄 Resume & Kurva S", use_container_width=True, type="secondary"):
@@ -3337,25 +3381,6 @@ def main():
         if user.get('role') == 'admin':
             if st.sidebar.button("⚙️ Admin Panel", use_container_width=True, type="secondary"):
                 st.session_state.page = "Admin Panel"
-
-        # Scheduled multi-slot backup trigger (checked every rerun). Admin only to reduce noise.
-        if user.get('role') == 'admin':
-            if 'scheduled_backup_last_check' not in st.session_state or (datetime.utcnow().timestamp() - st.session_state['scheduled_backup_last_check'] > 60):
-                try:
-                    service_sched, _ = build_drive_service()
-                    ok_sched, msg_sched = check_scheduled_backup(service_sched, FOLDER_ID_DEFAULT)
-                    if ok_sched:
-                        st.sidebar.success(msg_sched)
-                    else:
-                        # only show minimal info if it actually attempted or config off
-                        if 'disabled' in msg_sched.lower():
-                            pass
-                        else:
-                            st.sidebar.caption(f"Scheduled: {msg_sched}")
-                except Exception as e:
-                    st.sidebar.caption(f"Scheduled Err: {e}")
-                st.session_state['scheduled_backup_last_check'] = datetime.utcnow().timestamp()
-
         if st.sidebar.button("🕓 Audit Trail", use_container_width=True, type="secondary"):
             st.session_state.page = "Audit Trail"
         if st.sidebar.button("🌿 Turunan Project", use_container_width=True, type="secondary"):
@@ -3364,8 +3389,6 @@ def main():
             st.session_state.page = "User Setting"
         if st.sidebar.button("📖 Panduan", use_container_width=True, type="secondary"):
             st.session_state.page = "Panduan Pengguna"
-
-        # Logout button di bawah Panduan
         st.sidebar.button("🚪 Logout", on_click=logout_user, use_container_width=True)
         st.sidebar.markdown("---")
     
