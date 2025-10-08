@@ -2562,8 +2562,25 @@ def main():
         st.sidebar.code(sa_email)
         st.sidebar.markdown("- Pastikan folder Shared Drive sudah di-share ke email di atas!")
 
+
     # Tombol di sidebar
     st.sidebar.markdown("---")
+    # Tombol download manual DB
+    import os
+    db_path = DB_PATH
+    if os.path.exists(db_path):
+        with open(db_path, "rb") as f:
+            db_bytes = f.read()
+        st.sidebar.download_button(
+            label="⬇️ Download DB Manual",
+            data=db_bytes,
+            file_name=os.path.basename(db_path),
+            mime="application/octet-stream",
+            use_container_width=True
+        )
+    else:
+        st.sidebar.info("Database belum tersedia.")
+
     if st.sidebar.button("Export DB ke Google Drive", use_container_width=True):
         export_db_to_gdrive()
     init_db()
