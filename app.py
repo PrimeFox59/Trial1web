@@ -72,6 +72,17 @@ def init_db():
         message TEXT,
         backup_time TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
+        # audit_logs (log user login events)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        action TEXT,
+        details TEXT,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    """)
     conn.commit()
 
     # Seed default settings (idempotent)
