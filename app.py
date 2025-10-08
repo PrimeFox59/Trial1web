@@ -1,5 +1,9 @@
+
 import io
-import requests
+import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 GDRIVE_FOLDER_ID = "19pvCnUBhriYQdx8zBvY_3_BXvsjrK6eD"
 
@@ -2503,33 +2507,26 @@ def main():
         # Read DB file as bytes
         with open(db_path, "rb") as f:
             db_bytes = f.read()
-        # Prepare upload to Google Drive via API
-        # Ambil credentials dari st.secrets["connections"]
-        gdrive_token = st.secrets["connections"].get("gdrive_token")
-        if not gdrive_token:
-            st.error("GDrive token tidak ditemukan di st.secrets['connections'].")
+        # Ambil credentials dari st.secrets (TOML style)
+        if "gdrive" not in st.secrets["connections"]:
+            st.error("Service account GDrive tidak ditemukan di st.secrets['connections']['gdrive']!")
             return
-        headers = {
-            "Authorization": f"Bearer {gdrive_token}"
-        }
-        # Metadata file
+        sa_info = dict(st.secrets["connections"]["gdrive"])
+        # private_key multiline string, ensure triple quotes
+        if "private_key" in sa_info and isinstance(sa_info["private_key"], str) and not sa_info["private_key"].startswith("-----BEGIN"):
+            sa_info["private_key"] = sa_info["private_key"].replace('\\n', '\n')
+        creds = service_account.Credentials.from_service_account_info(sa_info, scopes=["https://www.googleapis.com/auth/drive"])
+        service = build("drive", "v3", credentials=creds)
         from datetime import datetime
         nowstr = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"project_charter_{nowstr}.db"
-        metadata = {
-            "name": filename,
-            "parents": [GDRIVE_FOLDER_ID]
-        }
-        files = {
-            'data': ('metadata', io.BytesIO(bytes(str(metadata), 'utf-8')), 'application/json; charset=UTF-8'),
-            'file': (filename, io.BytesIO(db_bytes), 'application/octet-stream')
-        }
-        upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
-        response = requests.post(upload_url, headers=headers, files=files)
-        if response.status_code == 200 or response.status_code == 201:
-            st.success(f"Database berhasil diupload ke Google Drive sebagai {filename}")
-        else:
-            st.error(f"Gagal upload ke Google Drive: {response.text}")
+        file_metadata = {"name": filename, "parents": [GDRIVE_FOLDER_ID]}
+        media = MediaIoBaseUpload(io.BytesIO(db_bytes), mimetype="application/octet-stream", resumable=True)
+        try:
+            created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+            st.success(f"Database berhasil diupload ke Google Drive sebagai {filename} (ID: {created.get('id')})")
+        except Exception as e:
+            st.error(f"Gagal upload ke Google Drive: {e}")
 
     # Tombol di sidebar
     st.sidebar.markdown("---")
