@@ -1,0 +1,7 @@
+streamlit
+sqlite3
+pandas
+hashlib
+altair
+io
+math
