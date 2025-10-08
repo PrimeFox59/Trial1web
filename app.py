@@ -2597,7 +2597,7 @@ def page_gdrive():
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
 
-    tabs = st.tabs(["List", "Upload file", "Download", "Delete"])
+    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB"])
 
     # List Tab
     with tabs[0]:
@@ -2685,6 +2685,98 @@ def page_gdrive():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Gagal hapus: {e}")
+
+    # Sync DB Tab
+    with tabs[4]:
+        st.subheader('🔄 Sinkronisasi Database')
+        st.markdown("Gunakan fitur ini untuk: 1) Mengunggah file database (.sqlite) baru dan menggantikan database lokal. 2) Merestore database lokal dari salinan yang ada di Google Drive.")
+        st.warning("Pastikan Anda benar-benar paham dampaknya. Selalu lakukan backup sebelum replace.")
+
+        col_upload, col_restore = st.columns(2)
+
+        # --- Upload & Replace Local DB ---
+        with col_upload:
+            st.markdown("### ⬆️ Upload & Ganti DB Lokal")
+            up_db = st.file_uploader("Pilih file .sqlite", type=["sqlite","db"], key="sync_upload_sqlite")
+            auto_push = st.checkbox("Juga upload file ini ke Drive setelah replace", value=True, key="sync_auto_push")
+            if up_db and st.button("Replace Database Lokal", type="primary"):
+                try:
+                    data = up_db.read()
+                    # Validasi header sqlite
+                    if not data.startswith(b"SQLite format 3\x00"):
+                        st.error("File bukan database SQLite yang valid.")
+                    else:
+                        ts = time.strftime('%Y%m%d_%H%M%S')
+                        # Backup lokal lama jika ada
+                        if os.path.exists(DB_PATH):
+                            backup_local = f"local_backup_before_replace_{ts}.sqlite"
+                            try:
+                                with open(DB_PATH,'rb') as oldf, open(backup_local,'wb') as newf:
+                                    newf.write(oldf.read())
+                                st.info(f"Backup lokal lama tersimpan: {backup_local}")
+                            except Exception as e:
+                                st.error(f"Gagal membuat backup lokal: {e}")
+                        # Tulis DB baru
+                        with open(DB_PATH,'wb') as fnew:
+                            fnew.write(data)
+                        st.success("Database lokal berhasil diganti dengan file yang diupload.")
+                        # Optional push ke Drive
+                        if auto_push:
+                            fname_drive = f"uploaded_db_{ts}.sqlite"
+                            fid = upload_bytes(service, folder_id, fname_drive, data, mimetype='application/x-sqlite3')
+                            if fid:
+                                st.success(f"Salinan diupload ke Drive sebagai {fname_drive} (ID: {fid})")
+                            else:
+                                st.error("Gagal mengupload salinan ke Drive.")
+                        st.info("Silakan refresh halaman atau navigasi ulang untuk memastikan app memakai DB baru.")
+                except Exception as e:
+                    st.error(f"Gagal mengganti database: {e}")
+
+        # --- Restore From Drive ---
+        with col_restore:
+            st.markdown("### ⬇️ Restore dari Drive")
+            try:
+                drive_files = list_files_in_folder(service, folder_id)
+            except Exception as e:
+                drive_files = []
+                st.error(f"Tidak bisa mengambil daftar file Drive: {e}")
+            # Filter file sqlite/db setelah mencoba mengambil daftar file
+            sqlite_files = [
+                f for f in drive_files
+                if f.get('name','').endswith('.sqlite') or f.get('name','').endswith('.db')
+            ]
+            if not sqlite_files:
+                st.info("Tidak ada file .sqlite / .db di folder Drive.")
+            else:
+                # Urutkan terbaru berdasarkan modifiedTime
+                try:
+                    sqlite_files.sort(key=lambda x: x.get('modifiedTime',''), reverse=True)
+                except Exception:
+                    pass
+                name_to_id_restore = {f["name"]: f["id"] for f in sqlite_files}
+                sel_restore = st.selectbox("Pilih file DB di Drive", list(name_to_id_restore.keys()), key="restore_sel_db")
+                if st.button("Restore Database Lokal dari Drive", type="primary"):
+                    try:
+                        fid = name_to_id_restore[sel_restore]
+                        data = download_file_bytes(service, fid)
+                        if not data.startswith(b"SQLite format 3\x00"):
+                            st.error("File di Drive bukan database SQLite valid.")
+                        else:
+                            ts = time.strftime('%Y%m%d_%H%M%S')
+                            if os.path.exists(DB_PATH):
+                                backup_local = f"local_backup_before_restore_{ts}.sqlite"
+                                try:
+                                    with open(DB_PATH,'rb') as oldf, open(backup_local,'wb') as newf:
+                                        newf.write(oldf.read())
+                                    st.info(f"Backup lokal lama tersimpan: {backup_local}")
+                                except Exception as e:
+                                    st.error(f"Gagal membuat backup lokal: {e}")
+                            with open(DB_PATH,'wb') as fnew:
+                                fnew.write(data)
+                            st.success(f"Database lokal berhasil direstore dari '{sel_restore}'.")
+                            st.info("Reload halaman untuk memakai DB baru.")
+                    except Exception as e:
+                        st.error(f"Gagal restore: {e}")
     
 def main():
     init_db()
