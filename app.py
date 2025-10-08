@@ -62,6 +62,16 @@ def init_db():
         key TEXT PRIMARY KEY,
         value TEXT
     )""")
+    # backup_log (log backup DB ke Drive)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS backup_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_name TEXT,
+        drive_file_id TEXT,
+        status TEXT,
+        message TEXT,
+        backup_time TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
     conn.commit()
 
     # Seed default settings (idempotent)
