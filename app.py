@@ -595,7 +595,7 @@ def page_gdrive():
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
 
-    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB"])
+    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log"])
 
     # List Tab
     with tabs[0]:
