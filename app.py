@@ -400,13 +400,16 @@ def upload_bytes(service, folder_id, name, data_bytes, mimetype="application/oct
     media = MediaIoBaseUpload(io.BytesIO(data_bytes), mimetype=mimetype, resumable=True)
     file_metadata = {"name": name, "parents": [folder_id]}
     try:
-        created = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        created = service.files().create(body=file_metadata, media_body=media, fields="id", supportsAllDrives=True).execute()
         return created.get("id")
     except Exception as e:
-        if hasattr(e, 'status_code') and e.status_code == 403 and 'storageQuotaExceeded' in str(e):
-            st.error("GAGAL UPLOAD: Service Account tidak bisa upload ke My Drive. Gunakan Shared Drive dan pastikan folder ID sudah dishare.")
+        err_text = str(e)
+        if 'File not found' in err_text:
+            st.error("Folder tidak ditemukan atau akses ditolak. Pastikan Folder ID benar dan folder telah dishare ke service account.")
+        elif 'storageQuotaExceeded' in err_text:
+            st.error("Kuota penyimpanan Google Drive penuh untuk service account ini.")
         else:
-            st.error(f"Gagal upload: {e}")
+            st.error(f"Gagal upload: {err_text}")
         return None
 
 def download_file_bytes(service, file_id):
@@ -418,6 +421,18 @@ def download_file_bytes(service, file_id):
         _, done = downloader.next_chunk()
     fh.seek(0)
     return fh.read()
+
+def get_folder_metadata(service, folder_id):
+    """Return (metadata, error_message)."""
+    try:
+        meta = service.files().get(fileId=folder_id, fields="id, name, mimeType, owners", supportsAllDrives=True).execute()
+        if meta.get('mimeType') != 'application/vnd.google-apps.folder':
+            return None, "ID tersebut bukan folder."
+        return meta, None
+    except Exception as e:
+        if 'File not found' in str(e):
+            return None, "Folder tidak ditemukan atau belum dibagikan ke service account."
+        return None, f"Gagal memeriksa folder: {e}"
 
 def delete_file(service, file_id):
     try:
@@ -2569,92 +2584,123 @@ Aplikasi ini membantu Anda membuat, mengelola, dan memantau kemajuan Project Cha
 def page_gdrive():
     require_login()
     st.header("📂 Google Drive Files")
-    st.markdown("Folder ID (hardcoded): **" + FOLDER_ID_DEFAULT + "**")
-    folder_id = FOLDER_ID_DEFAULT
     try:
         service, sa_email = build_drive_service()
     except Exception:
         return
+
+    if "gdrive_folder_id" not in st.session_state:
+        st.session_state.gdrive_folder_id = FOLDER_ID_DEFAULT
+
+    with st.expander("🔧 Folder Settings", expanded=True):
+        st.markdown(
+            "Masukkan Folder ID yang ingin digunakan. Pastikan folder telah di-Share kepada service account berikut:<br><code>"+sa_email+"</code>",
+            unsafe_allow_html=True
+        )
+        fid_input = st.text_input("Folder ID", st.session_state.gdrive_folder_id)
+        c1, c2 = st.columns([1,1])
+        if c1.button("Simpan ID"):
+            st.session_state.gdrive_folder_id = fid_input.strip()
+            st.success("Folder ID disimpan (session).")
+        if c2.button("Refresh / Cek"):
+            st.experimental_rerun()
+
+    folder_id = st.session_state.gdrive_folder_id.strip()
+    meta, meta_err = get_folder_metadata(service, folder_id)
+    if meta_err:
+        st.error(meta_err)
+        st.info("Periksa: 1) ID benar, 2) Folder dishare ke service account sebagai Editor.")
+        return
+    st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
+
     tabs = st.tabs(["List", "Upload file", "Download", "Delete"])
 
-    # List
+    # List Tab
     with tabs[0]:
         st.subheader("Daftar File")
-        # Tombol export database ke Google Drive
-        with st.container():
-            if st.button("📤 Export Database ke Drive", help="Upload salinan file database saat ini ke folder Google Drive"):
-                if os.path.exists(DB_PATH):
-                    try:
-                        with open(DB_PATH, "rb") as f:
-                            data = f.read()
-                        backup_name = f"backup_db_{time.strftime('%Y%m%d_%H%M%S')}.sqlite"
-                        fid = upload_bytes(service, folder_id, backup_name, data, mimetype="application/octet-stream")
-                        if fid:
-                            st.success(f"Database berhasil diexport sebagai {backup_name} (ID: {fid})")
-                        else:
-                            st.error("Gagal mengupload database.")
-                    except Exception as e:
-                        st.error(f"Terjadi kesalahan saat membaca / mengupload database: {e}")
-                else:
-                    st.error(f"File database '{DB_PATH}' tidak ditemukan.")
-        st.markdown("---")
-        with st.spinner("Mengambil data..."):
+        try:
             files = list_files_in_folder(service, folder_id)
+        except Exception as e:
+            st.error(f"Gagal mengambil daftar file: {e}")
+            return
         if not files:
-            st.info("Folder kosong atau tidak bisa diakses.")
+            st.info("Folder kosong.")
         else:
             df = pd.DataFrame(files)
-            def nice_size(s):
+            if 'size' in df.columns:
+                def nice_size(s):
+                    try:
+                        s = int(s)
+                    except Exception:
+                        return '-'
+                    for unit in ['B','KB','MB','GB']:
+                        if s < 1024:
+                            return f"{s}{unit}"
+                        s //= 1024
+                    return f"{s}TB"
+                df['size'] = df['size'].apply(nice_size)
+            st.dataframe(df[['name','id','mimeType','createdTime','modifiedTime'] + ([ 'size'] if 'size' in df.columns else [])], use_container_width=True, hide_index=True)
+
+        st.markdown('---')
+        st.subheader('Backup Database ke Drive')
+        if st.button('📤 Export Database ke Drive'):
+            if os.path.exists(DB_PATH):
                 try:
-                    s = int(s)
-                except Exception:
-                    return "-"
-                for unit in ["B", "KB", "MB", "GB"]:
-                    if s < 1024:
-                        return f"{s}{unit}"
-                    s = s // 1024
-                return f"{s}TB"
-            if "size" in df.columns:
-                df["size"] = df["size"].apply(nice_size)
-            st.dataframe(df[["name", "id", "mimeType", "createdTime", "modifiedTime", "size"]], use_container_width=True, hide_index=True)
+                    with open(DB_PATH,'rb') as f:
+                        data = f.read()
+                    backup_name = f"backup_db_{time.strftime('%Y%m%d_%H%M%S')}.sqlite"
+                    fid = upload_bytes(service, folder_id, backup_name, data, mimetype='application/x-sqlite3')
+                    if fid:
+                        st.success(f"Database berhasil diupload sebagai {backup_name} (ID: {fid})")
+                    else:
+                        st.error("Gagal mengupload database.")
+                except Exception as e:
+                    st.error(f"Error saat membaca / upload DB: {e}")
+            else:
+                st.error(f"File database '{DB_PATH}' tidak ditemukan.")
 
-    # Upload
+    # Upload Tab
     with tabs[1]:
-        st.subheader("Upload File")
-        uploaded = st.file_uploader("Pilih file", type=None)
-        if uploaded and st.button("Upload ke Drive"):
+        st.subheader('Upload File Baru')
+        uploaded = st.file_uploader('Pilih file')
+        if uploaded and st.button('Upload ke Drive'):
             data = uploaded.read()
-            fid = upload_bytes(service, folder_id, uploaded.name, data, mimetype=uploaded.type or "application/octet-stream")
+            fid = upload_bytes(service, folder_id, uploaded.name, data, mimetype=uploaded.type or 'application/octet-stream')
             if fid:
-                st.success(f"File terupload (ID: {fid})")
+                st.success(f"File '{uploaded.name}' terupload (ID: {fid})")
 
-    # Download
+    # Download Tab
     with tabs[2]:
-        st.subheader("Download File")
+        st.subheader('Download File')
         files_all = list_files_in_folder(service, folder_id)
-        if files_all:
-            sel = st.selectbox("Pilih file", [f"{f['name']} ({f['id']})" for f in files_all])
-            if sel and st.button("Download file"):
-                fid = sel.split("(")[-1].strip(")")
-                data = download_file_bytes(service, fid)
-                name = next((f["name"] for f in files_all if f["id"] == fid), "download.bin")
-                st.download_button("Klik untuk download", data=data, file_name=name)
+        if not files_all:
+            st.info('Folder kosong.')
         else:
-            st.info("Folder kosong.")
+            name_to_id = {f['name']: f['id'] for f in files_all}
+            sel_name = st.selectbox('Pilih file', list(name_to_id.keys()))
+            if st.button('Download file'):
+                try:
+                    data = download_file_bytes(service, name_to_id[sel_name])
+                    st.download_button('Klik untuk download', data=data, file_name=sel_name)
+                except Exception as e:
+                    st.error(f"Gagal download: {e}")
 
-    # Delete
+    # Delete Tab
     with tabs[3]:
-        st.subheader("Hapus File")
+        st.subheader('Hapus File')
         files_all = list_files_in_folder(service, folder_id)
-        if files_all:
-            sel = st.selectbox("Pilih file untuk hapus", [f"{f['name']} ({f['id']})" for f in files_all])
-            if sel and st.button("Hapus file"):
-                fid = sel.split("(")[-1].strip(")")
-                delete_file(service, fid)
-                st.success("File berhasil dihapus")
-                st.experimental_rerun()
+        if not files_all:
+            st.info('Folder kosong.')
         else:
-            st.info("Folder kosong.")
+            name_to_id = {f['name']: f['id'] for f in files_all}
+            sel_name = st.selectbox('Pilih file untuk dihapus', list(name_to_id.keys()))
+            if st.button('Hapus file'):
+                try:
+                    delete_file(service, name_to_id[sel_name])
+                    st.success(f"File '{sel_name}' dihapus.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Gagal hapus: {e}")
     
 def main():
     init_db()
