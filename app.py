@@ -437,22 +437,6 @@ def auto_daily_backup(service, folder_id=FOLDER_ID_DEFAULT):
     ok, msg = perform_backup(service, folder_id)
     return ok, msg
 
-"""Scheduled multi-slot backup (overwrites single file per configuration)
-
-Now made DYNAMIC. Admin can edit slot definitions in the GDrive settings UI.
-Slot model stored in app_settings under key 'scheduled_backup_slots_json' as JSON array:
-[
-  {"start": 6, "end": 12, "name": "slot_morning"},
-  {"start": 12, "end": 18, "name": "slot_afternoon"},
-  {"start": 18, "end": 23, "name": "slot_evening"},
-  {"start": 23, "end": 6, "name": "slot_night"}  # wrap past midnight (23:00 -> 06:00)
-]
-Rules:
-- start & end are integers 0..23 (end may be equal to start? (disallowed) ).
-- If start < end => active for hours start <= H < end.
-- If start > end => wrap past midnight => active if H >= start OR H < end.
-- Names must be unique (used as slot IDs in logs & last-slot tracking).
-"""
 
 DEFAULT_SCHEDULE_SLOTS = [
     {"start": 6,  "end": 12, "name": "slot_morning"},
