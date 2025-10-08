@@ -18,14 +18,13 @@ st.set_page_config(page_title="Streamlit + Google Drive Lokal", layout="wide")
 # --------------------------------------------------
 # Fungsi utilitas
 def build_drive_service():
-    """Load credentials dari service_account.json lokal"""
-    if not os.path.exists("service_account.json"):
-        st.error("File service_account.json tidak ditemukan di folder project!")
+    """Load credentials dari Streamlit Secrets (untuk deploy di Streamlit Cloud)"""
+    try:
+        creds_dict = st.secrets["service_account"]
+    except Exception:
+        st.error("Secrets 'service_account' tidak ditemukan! Upload di Streamlit Cloud dashboard.")
         st.stop()
-
-    creds = service_account.Credentials.from_service_account_file(
-        "service_account.json", scopes=SCOPES
-    )
+    creds = service_account.Credentials.from_service_account_info(dict(creds_dict), scopes=SCOPES)
     service = build("drive", "v3", credentials=creds)
     sa_email = creds.service_account_email
     return service, sa_email
