@@ -1,3 +1,8 @@
+import io
+import requests
+
+GDRIVE_FOLDER_ID = "19pvCnUBhriYQdx8zBvY_3_BXvsjrK6eD"
+
 def page_audit_trail():
     st.header("🕓 Audit Trail")
     st.markdown("---")
@@ -2492,6 +2497,44 @@ Aplikasi ini membantu Anda membuat, mengelola, dan memantau kemajuan Project Cha
 """)
     
 def main():
+    # --- Export DB to Google Drive ---
+    def export_db_to_gdrive():
+        db_path = DB_PATH
+        # Read DB file as bytes
+        with open(db_path, "rb") as f:
+            db_bytes = f.read()
+        # Prepare upload to Google Drive via API
+        # Ambil credentials dari st.secrets["connections"]
+        gdrive_token = st.secrets["connections"].get("gdrive_token")
+        if not gdrive_token:
+            st.error("GDrive token tidak ditemukan di st.secrets['connections'].")
+            return
+        headers = {
+            "Authorization": f"Bearer {gdrive_token}"
+        }
+        # Metadata file
+        from datetime import datetime
+        nowstr = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"project_charter_{nowstr}.db"
+        metadata = {
+            "name": filename,
+            "parents": [GDRIVE_FOLDER_ID]
+        }
+        files = {
+            'data': ('metadata', io.BytesIO(bytes(str(metadata), 'utf-8')), 'application/json; charset=UTF-8'),
+            'file': (filename, io.BytesIO(db_bytes), 'application/octet-stream')
+        }
+        upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+        response = requests.post(upload_url, headers=headers, files=files)
+        if response.status_code == 200 or response.status_code == 201:
+            st.success(f"Database berhasil diupload ke Google Drive sebagai {filename}")
+        else:
+            st.error(f"Gagal upload ke Google Drive: {response.text}")
+
+    # Tombol di sidebar
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Export DB ke Google Drive", use_container_width=True):
+        export_db_to_gdrive()
     init_db()
 
     if "page" not in st.session_state:
