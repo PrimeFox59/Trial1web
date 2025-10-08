@@ -1,7 +1,4 @@
 streamlit
-sqlite3
 pandas
-hashlib
+python-dateutil
 altair
-io
-math
