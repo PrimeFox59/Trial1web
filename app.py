@@ -2603,7 +2603,7 @@ def page_gdrive():
             st.session_state.gdrive_folder_id = fid_input.strip()
             st.success("Folder ID disimpan (session).")
         if c2.button("Refresh / Cek"):
-            st.experimental_rerun()
+            st.rerun()
 
     folder_id = st.session_state.gdrive_folder_id.strip()
     meta, meta_err = get_folder_metadata(service, folder_id)
@@ -2698,7 +2698,7 @@ def page_gdrive():
                 try:
                     delete_file(service, name_to_id[sel_name])
                     st.success(f"File '{sel_name}' dihapus.")
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Gagal hapus: {e}")
     
