@@ -561,6 +561,66 @@ def check_scheduled_backup(service, folder_id=FOLDER_ID_DEFAULT):
         return False, f'Error {e}'
 
 # -------------------------
+# Auto-restore after autosleep reset detection
+# -------------------------
+def _is_probably_fresh_seed_db():
+    """Heuristik: anggap DB masih fresh bila belum ada project, user <=5 (seed), dan backup_log kosong."""
+    try:
+        proj_cnt = fetchone("SELECT COUNT(*) c FROM projects")['c']
+        if proj_cnt > 0:
+            return False
+        user_cnt = fetchone("SELECT COUNT(*) c FROM users")['c']
+        if user_cnt > 5:
+            return False
+        bkup_cnt = fetchone("SELECT COUNT(*) c FROM backup_log")['c']
+        if bkup_cnt > 0:
+            return False
+        return True
+    except Exception:
+        return False
+
+def _pick_latest_drive_backup_file(service, folder_id):
+    try:
+        files = list_files_in_folder(service, folder_id)
+    except Exception:
+        return None
+    if not files:
+        return None
+    candidates = [f for f in files if f.get('name','').endswith('.sqlite') or f.get('name','').endswith('.db')]
+    if not candidates:
+        return None
+    try:
+        candidates.sort(key=lambda x: x.get('modifiedTime',''), reverse=True)
+    except Exception:
+        pass
+    return candidates[0]
+
+def attempt_auto_restore_if_seed(service, folder_id=FOLDER_ID_DEFAULT):
+    """Jika diaktifkan & terdeteksi DB fresh, restore otomatis dari backup Drive terbaru sekali per sesi."""
+    if get_setting('auto_restore_enabled', 'true') != 'true':
+        return False, 'Auto-restore disabled'
+    if st.session_state.get('auto_restore_attempted'):
+        return False, 'Already attempted'
+    st.session_state['auto_restore_attempted'] = True
+    if not _is_probably_fresh_seed_db():
+        return False, 'DB not fresh'
+    latest = _pick_latest_drive_backup_file(service, folder_id)
+    if not latest:
+        return False, 'No backup found'
+    fid = latest.get('id'); fname = latest.get('name')
+    try:
+        data = download_file_bytes(service, fid)
+        if not data.startswith(b'SQLite format 3\x00'):
+            return False, 'Invalid sqlite header'
+        with open(DB_PATH, 'wb') as f:
+            f.write(data)
+        set_setting('auto_restore_last_file', fname)
+        set_setting('auto_restore_last_time', datetime.utcnow().isoformat())
+        return True, f'Restored from {fname}'
+    except Exception as e:
+        return False, f'Restore failed: {e}'
+
+# -------------------------
 # Google Drive Helper Functions
 # -------------------------
 def build_drive_service():
@@ -2847,6 +2907,19 @@ def page_gdrive():
                 set_setting('scheduled_backup_enabled', 'true' if enable_toggle else 'false')
                 set_setting('scheduled_backup_filename', new_name.strip() or 'scheduled_backup.sqlite')
                 st.success("Pengaturan jadwal disimpan.")
+            st.markdown("### ♻️ Auto-Restore Saat Wake (Autosleep)")
+            ar_enabled = get_setting('auto_restore_enabled','true') == 'true'
+            col_ar1, col_ar2 = st.columns([1,2])
+            with col_ar1:
+                ar_toggle = st.checkbox('Aktifkan Auto-Restore', value=ar_enabled, key='auto_restore_toggle')
+            last_ar_file = get_setting('auto_restore_last_file','-')
+            last_ar_time = get_setting('auto_restore_last_time','-')
+            with col_ar2:
+                st.caption(f"Terakhir restore: {last_ar_file} pada {last_ar_time}")
+            if st.button('Simpan Auto-Restore'):
+                set_setting('auto_restore_enabled', 'true' if ar_toggle else 'false')
+                st.success('Pengaturan auto-restore disimpan.')
+            st.caption('Auto-restore akan mencoba mendeteksi DB fresh (reset) dan mengganti otomatis dengan backup Drive terbaru sekali per sesi admin pertama yang login.')
             # --- Dynamic Slot Editor ---
             with st.expander("🕒 Edit Slot Jadwal (Advanced)", expanded=False):
                 st.markdown("""
@@ -3181,6 +3254,22 @@ def main():
             except Exception as e:
                 st.sidebar.warning(f"Auto Backup gagal: {e}")
             st.session_state['auto_backup_checked'] = True
+
+        # Auto-restore attempt (only once per session, admin)
+        if user.get('role') == 'admin' and 'auto_restore_done' not in st.session_state:
+            try:
+                service_ar, _ = build_drive_service()
+                ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
+                if ok_ar:
+                    st.sidebar.success(f"Auto-Restore: {msg_ar}")
+                    st.session_state['auto_restore_done'] = True
+                    # Force rerun so subsequent logic uses restored DB
+                    st.rerun()
+                else:
+                    st.sidebar.caption(f"Auto-Restore: {msg_ar}")
+            except Exception as e:
+                st.sidebar.caption(f"Auto-Restore Err: {e}")
+                st.session_state['auto_restore_done'] = True
 
         if st.sidebar.button("📊 Dashboard", use_container_width=True, type="secondary"):
             st.session_state.page = "Dashboard"
