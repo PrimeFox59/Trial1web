@@ -2580,6 +2580,24 @@ def page_gdrive():
     # List
     with tabs[0]:
         st.subheader("Daftar File")
+        # Tombol export database ke Google Drive
+        with st.container():
+            if st.button("📤 Export Database ke Drive", help="Upload salinan file database saat ini ke folder Google Drive"):
+                if os.path.exists(DB_PATH):
+                    try:
+                        with open(DB_PATH, "rb") as f:
+                            data = f.read()
+                        backup_name = f"backup_db_{time.strftime('%Y%m%d_%H%M%S')}.sqlite"
+                        fid = upload_bytes(service, folder_id, backup_name, data, mimetype="application/octet-stream")
+                        if fid:
+                            st.success(f"Database berhasil diexport sebagai {backup_name} (ID: {fid})")
+                        else:
+                            st.error("Gagal mengupload database.")
+                    except Exception as e:
+                        st.error(f"Terjadi kesalahan saat membaca / mengupload database: {e}")
+                else:
+                    st.error(f"File database '{DB_PATH}' tidak ditemukan.")
+        st.markdown("---")
         with st.spinner("Mengambil data..."):
             files = list_files_in_folder(service, folder_id)
         if not files:
