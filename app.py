@@ -280,6 +280,16 @@ def init_db():
         start_date TEXT,
         end_date TEXT
     )""")
+    # backup_log (automatic / manual Drive backups)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS backup_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        backup_time TEXT DEFAULT CURRENT_TIMESTAMP,
+        file_name TEXT,
+        drive_file_id TEXT,
+        status TEXT, -- SUCCESS / FAILED
+        message TEXT
+    )""")
     conn.commit()
 
     # ensure at least one admin exists (seed)
@@ -361,6 +371,51 @@ def execute(query, params=()):
     last = cur.lastrowid
     conn.close()
     return last
+
+# -------------------------
+# Backup helpers
+# -------------------------
+def perform_backup(service, folder_id=FOLDER_ID_DEFAULT):
+    """Create a timestamped backup of the SQLite DB to Google Drive and record in backup_log.
+
+    Returns (success: bool, info_message: str)
+    """
+    if not os.path.exists(DB_PATH):
+        return False, f"Database '{DB_PATH}' tidak ditemukan." 
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    backup_name = f"auto_backup_{ts}.sqlite"
+    try:
+        with open(DB_PATH, 'rb') as f:
+            data = f.read()
+        fid = upload_bytes(service, folder_id, backup_name, data, mimetype='application/x-sqlite3')
+        if fid:
+            execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
+                    (backup_name, fid, 'SUCCESS', ''))
+            return True, f"Backup sukses: {backup_name} (ID: {fid})"
+        else:
+            execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
+                    (backup_name, None, 'FAILED', 'Upload gagal'))
+            return False, "Upload Drive gagal." 
+    except Exception as e:
+        execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
+                (backup_name, None, 'FAILED', str(e)))
+        return False, f"Gagal backup: {e}" 
+
+def auto_daily_backup(service, folder_id=FOLDER_ID_DEFAULT):
+    """Run once per session start (post-login). If last SUCCESS backup is not today -> perform one."""
+    # Cek backup sukses terakhir
+    row = fetchone("SELECT backup_time FROM backup_log WHERE status='SUCCESS' ORDER BY id DESC LIMIT 1")
+    today_str = date.today().isoformat()
+    if row:
+        try:
+            last_date = row['backup_time'][:10]
+            if last_date == today_str:
+                return False, "Backup harian sudah ada hari ini." 
+        except Exception:
+            pass
+    # Jalankan backup
+    ok, msg = perform_backup(service, folder_id)
+    return ok, msg
 
 # -------------------------
 # Google Drive Helper Functions
@@ -2602,6 +2657,21 @@ def page_gdrive():
     # List Tab
     with tabs[0]:
         st.subheader("Daftar File")
+        # Manual trigger backup (admin only)
+        u = current_user()
+        if u and u.get('role') == 'admin':
+            if st.button('🚀 Trigger Auto Backup Sekarang'):
+                ok, msg = perform_backup(service, folder_id)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+            # Show last 5 backup logs
+            logs = fetchall("SELECT * FROM backup_log ORDER BY id DESC LIMIT 5")
+            if logs:
+                st.markdown("**Riwayat Backup Terbaru:**")
+                for lg in logs:
+                    st.markdown(f"- {lg['backup_time']} | {lg['file_name']} | {lg['status']}")
         try:
             files = list_files_in_folder(service, folder_id)
         except Exception as e:
@@ -2804,6 +2874,19 @@ def main():
         st.sidebar.markdown(f"🏢 {user.get('department','-')}")
         st.sidebar.markdown(f"**Role:** {user['role'].capitalize()}")
         st.sidebar.markdown("---")
+
+        # Auto backup harian dijalankan sekali per sesi untuk admin
+        if user.get('role') == 'admin' and 'auto_backup_checked' not in st.session_state:
+            try:
+                service_ab, _ = build_drive_service()
+                ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
+                if ok_ab:
+                    st.sidebar.success(f"Auto Backup: {msg_ab}")
+                else:
+                    st.sidebar.info(f"Auto Backup: {msg_ab}")
+            except Exception as e:
+                st.sidebar.warning(f"Auto Backup gagal: {e}")
+            st.session_state['auto_backup_checked'] = True
 
         if st.sidebar.button("📊 Dashboard", use_container_width=True, type="secondary"):
             st.session_state.page = "Dashboard"
