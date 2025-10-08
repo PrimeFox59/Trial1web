@@ -2585,31 +2585,15 @@ def page_gdrive():
     require_login()
     st.header("📂 Google Drive Files")
     try:
-        service, sa_email = build_drive_service()
+        service, _sa_email = build_drive_service()
     except Exception:
         return
-
-    if "gdrive_folder_id" not in st.session_state:
-        st.session_state.gdrive_folder_id = FOLDER_ID_DEFAULT
-
-    with st.expander("🔧 Folder Settings", expanded=True):
-        st.markdown(
-            "Masukkan Folder ID yang ingin digunakan. Pastikan folder telah di-Share kepada service account berikut:<br><code>"+sa_email+"</code>",
-            unsafe_allow_html=True
-        )
-        fid_input = st.text_input("Folder ID", st.session_state.gdrive_folder_id)
-        c1, c2 = st.columns([1,1])
-        if c1.button("Simpan ID"):
-            st.session_state.gdrive_folder_id = fid_input.strip()
-            st.success("Folder ID disimpan (session).")
-        if c2.button("Refresh / Cek"):
-            st.rerun()
-
-    folder_id = st.session_state.gdrive_folder_id.strip()
+    # Hardcoded folder ID per permintaan user
+    folder_id = FOLDER_ID_DEFAULT
     meta, meta_err = get_folder_metadata(service, folder_id)
     if meta_err:
         st.error(meta_err)
-        st.info("Periksa: 1) ID benar, 2) Folder dishare ke service account sebagai Editor.")
+        st.info("Pastikan folder dengan ID di-hardcode sudah dishare ke service account sebagai Editor.")
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
 
