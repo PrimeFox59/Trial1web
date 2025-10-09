@@ -1053,8 +1053,13 @@ def main():
                 'time': datetime.utcnow().isoformat()
             }
         st.session_state['prelogin_auto_restore_done'] = True
-        # Tampilkan halaman status restore terlebih dahulu
-        st.session_state.page = 'RestoreStatus'
+        # Jika benar-benar ada proses restore (berhasil / gagal) tampilkan halaman status.
+        # Jika hanya skip (Lewati auto-restore...) langsung ke halaman login.
+        msg_prelogin = st.session_state['prelogin_auto_restore_result'].get('message','')
+        if msg_prelogin.startswith('Lewati auto-restore'):
+            st.session_state.page = 'Authentication'
+        else:
+            st.session_state.page = 'RestoreStatus'
     
     # Reset flags lama jika user kembali ke halaman login setelah selesai
     if "page" not in st.session_state:
