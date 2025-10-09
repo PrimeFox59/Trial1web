@@ -152,7 +152,11 @@ def login_user(user_row):
 def logout_user():
     if "user" in st.session_state:
         del st.session_state["user"]
-    st.session_state.page = "Authentication" 
+    # Reset auto-restore/backup flags on logout
+    for k in ["auto_restore_checked", "auto_backup_checked", "auto_restore_attempted"]:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.session_state.page = "Authentication"
 
 def fetchall(query, params=()):
     conn = sqlite3.connect(DB_PATH)
@@ -1013,6 +1017,10 @@ def page_gdrive():
 def main():
     init_db()
 
+    # Reset auto-restore/backup flags on app start (fresh session)
+    for k in ["auto_restore_checked", "auto_backup_checked", "auto_restore_attempted"]:
+        if k in st.session_state and st.session_state.page == "Authentication":
+            del st.session_state[k]
     if "page" not in st.session_state:
         st.session_state.page = "Authentication"
     if "user" not in st.session_state:
@@ -1037,7 +1045,7 @@ def main():
         st.sidebar.markdown("---")
 
 
-        # --- Refactored: Auto-Restore runs before Auto-Backup ---
+        # --- Improved: Guarantee Auto-Restore before Auto-Backup ---
         if user.get('role') == 'admin':
             # 1. Auto-Restore: only once per session after reboot
             if 'auto_restore_checked' not in st.session_state:
@@ -1047,6 +1055,7 @@ def main():
                     if ok_ar:
                         st.sidebar.success(f"Auto-Restore: {msg_ar}")
                         st.session_state['auto_restore_checked'] = 'restored'
+                        st.session_state['auto_backup_checked'] = 'skipped'  # skip backup after restore
                         st.rerun()
                     else:
                         st.sidebar.caption(f"Auto-Restore: {msg_ar}")
@@ -1054,12 +1063,10 @@ def main():
                 except Exception as e:
                     st.sidebar.caption(f"Auto-Restore Err: {e}")
                     st.session_state['auto_restore_checked'] = 'error'
-            # 2. Auto-Backup: only if restore did NOT just happen
+            # 2. Auto-Backup: only if restore did NOT just happen and DB is not fresh
             if st.session_state.get('auto_restore_checked') == 'restored':
-                # Just restored, skip backup for this session
                 st.sidebar.caption("Auto Backup: dilewati (baru saja restore)")
-                st.session_state['auto_backup_checked'] = 'skipped'
-            elif 'auto_backup_checked' not in st.session_state:
+            elif st.session_state.get('auto_restore_checked') == 'checked' and 'auto_backup_checked' not in st.session_state:
                 try:
                     if _is_probably_fresh_seed_db():
                         st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
