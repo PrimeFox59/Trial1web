@@ -1082,64 +1082,10 @@ def main():
 
 
         # --- Improved: Guarantee Auto-Restore before Auto-Backup ---
-        if user.get('role') == 'admin':
-            # 1. Auto-Restore: only once per session after reboot
-            if 'auto_restore_checked' not in st.session_state:
-                try:
-                    service_ar, _ = build_drive_service()
-                    ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
-                    if ok_ar:
-                        st.sidebar.success(f"Auto-Restore: {msg_ar}")
-                        st.session_state['auto_restore_checked'] = 'restored'
-                        st.session_state['auto_backup_checked'] = 'skipped'  # skip backup after restore
-                        st.rerun()
-                    else:
-                        st.sidebar.caption(f"Auto-Restore: {msg_ar}")
-                        st.session_state['auto_restore_checked'] = 'checked'
-                except Exception as e:
-                    st.sidebar.caption(f"Auto-Restore Err: {e}")
-                    st.session_state['auto_restore_checked'] = 'error'
-            # 2. Auto-Backup: only if restore did NOT just happen and DB is not fresh
-            if st.session_state.get('auto_restore_checked') == 'restored':
-                st.sidebar.caption("Auto Backup: dilewati (baru saja restore)")
-            elif st.session_state.get('auto_restore_checked') == 'checked' and 'auto_backup_checked' not in st.session_state:
-                try:
-                    if _is_probably_fresh_seed_db():
-                        st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
-                        st.session_state['auto_backup_checked'] = 'skipped'
-                    else:
-                        service_ab, _ = build_drive_service()
-                        ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
-                        if ok_ab:
-                            st.sidebar.success(f"Auto Backup: {msg_ab}")
-                        else:
-                            st.sidebar.caption(f"Auto Backup: {msg_ab}")
-                        st.session_state['auto_backup_checked'] = 'done'
-                except Exception as e:
-                    st.sidebar.caption(f"Auto Backup Err: {e}")
-                    st.session_state['auto_backup_checked'] = 'error'
-
-        if user.get('role') == 'admin':
-            if 'scheduled_backup_last_check' not in st.session_state or (datetime.utcnow().timestamp() - st.session_state['scheduled_backup_last_check'] > 60):
-                try:
-                    service_sched, _ = build_drive_service()
-                    ok_sched, msg_sched = check_scheduled_backup(service_sched, FOLDER_ID_DEFAULT)
-                    if ok_sched:
-                        st.sidebar.success(msg_sched)
-                    else:
-                        if 'disabled' in (msg_sched or '').lower():
-                            pass
-                        else:
-                            st.sidebar.caption(f"Scheduled: {msg_sched}")
-                except Exception as e:
-                    st.sidebar.caption(f"Scheduled Err: {e}")
-                st.session_state['scheduled_backup_last_check'] = datetime.utcnow().timestamp()
-
-        # Tombol hanya untuk G Drive & Logout
-        if st.sidebar.button("📂 G Drive", use_container_width=True, type="primary"):
-            st.session_state.page = "G Drive"
-        st.sidebar.button("🚪 Logout", on_click=logout_user, use_container_width=True)
-        st.sidebar.markdown("---")
+        # Saat belum login tidak perlu menjalankan logic auto-backup / auto-restore tambahan
+        # dan tidak menampilkan tombol G Drive / Logout yang membingungkan.
+        # Logic auto restore awal sudah dilakukan sebelum halaman login (RestoreStatus page).
+        pass
     
     # Halaman status restore (sebelum login) bila baru saja wake & mencoba restore
     if st.session_state.page == 'RestoreStatus' and not user:
