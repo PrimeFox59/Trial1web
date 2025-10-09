@@ -1081,6 +1081,12 @@ def main():
         st.sidebar.markdown(f"🏢 {user.get('department','-')}")
         st.sidebar.markdown(f"**Role:** {user['role'].capitalize()}")
         st.sidebar.markdown("---")
+        # Navigasi utama setelah login
+        if st.sidebar.button("📂 G Drive", use_container_width=True, type="primary"):
+            st.session_state.page = "G Drive"
+            st.rerun()
+        st.sidebar.button("🚪 Logout", on_click=logout_user, use_container_width=True)
+        st.sidebar.markdown("---")
     elif st.session_state.page != 'RestoreStatus':
         if st.sidebar.button("🔐 Login / Register", use_container_width=True):
             st.session_state.page = "Authentication"
