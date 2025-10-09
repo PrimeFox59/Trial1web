@@ -637,7 +637,7 @@ def page_gdrive():
             if submitted and new_note.strip():
                 execute("INSERT INTO record_notes (note, created_by) VALUES (?, ?)", (new_note.strip(), user['email'] if user else '-'))
                 st.success('Catatan ditambahkan.')
-                st.experimental_rerun()
+                st.rerun()
         # List notes
         notes = fetchall("SELECT * FROM record_notes ORDER BY id DESC LIMIT 50")
         if not notes:
@@ -654,11 +654,11 @@ def page_gdrive():
                     if st.button(f"Simpan Edit #{row['id']}", key=f"save_edit_{row['id']}"):
                         execute("UPDATE record_notes SET note=? WHERE id=?", (edit_val.strip(), row['id']))
                         st.success('Catatan diperbarui.')
-                        st.experimental_rerun()
+                        st.rerun()
                     if st.button(f"Hapus #{row['id']}", key=f"delete_note_{row['id']}"):
                         execute("DELETE FROM record_notes WHERE id=?", (row['id'],))
                         st.warning('Catatan dihapus.')
-                        st.experimental_rerun()
+                        st.rerun()
 
     # List Tab
     with tabs[0]:
