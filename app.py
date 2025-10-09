@@ -25,7 +25,7 @@ DB_PATH = "project_charter.db"
 # ---------------------------------
 # Dapat diubah jika ingin menonaktifkan pengaruh timeline terhadap skor agregasi
 ENABLE_TIMELINE_WEIGHTING = True
-st.set_page_config(layout="wide", page_icon="icon.png", page_title="Project Charter")
+st.set_page_config(layout="wide", page_icon="icon.png", page_title="Guardian")
 
 # -------------------------
 # Utility: DB initialization
