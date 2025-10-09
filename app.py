@@ -521,6 +521,81 @@ def delete_file(service, file_id):
 
 
 # -------------------------
+# Folder usage (size) helper
+# -------------------------
+def _format_bytes(n: int) -> str:
+    try:
+        n = int(n)
+    except Exception:
+        return "-"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(n)
+    for u in units:
+        if size < 1024 or u == units[-1]:
+            if u == "B":
+                return f"{int(size)} {u}"
+            return f"{size:.2f} {u}"
+        size /= 1024.0
+
+def get_folder_usage_stats(service, folder_id: str, recursive: bool = True):
+    """Hitung total ukuran file dalam folder (opsional termasuk subfolder).
+    Mengembalikan dict: { total_bytes, file_count, folder_count, unknown_size_count }
+    Catatan: File Google Docs/Sheets bisa tidak memiliki field 'size' sehingga dihitung ke unknown_size_count.
+    """
+    total_bytes = 0
+    file_count = 0
+    folder_count = 0
+    unknown_size = 0
+
+    page_token = None
+    query = f"'{folder_id}' in parents and trashed=false"
+    while True:
+        resp = service.files().list(
+            q=query,
+            spaces="drive",
+            fields="nextPageToken, files(id, name, mimeType, size)",
+            pageToken=page_token,
+            pageSize=200,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        for f in resp.get("files", []):
+            mime = f.get("mimeType", "")
+            if mime == 'application/vnd.google-apps.folder':
+                folder_count += 1
+                if recursive:
+                    try:
+                        sub = get_folder_usage_stats(service, f["id"], recursive=True)
+                        total_bytes += sub["total_bytes"]
+                        file_count += sub["file_count"]
+                        folder_count += sub["folder_count"]
+                        unknown_size += sub["unknown_size_count"]
+                    except Exception:
+                        # Abaikan error subfolder, lanjutkan
+                        pass
+            else:
+                file_count += 1
+                sz = f.get("size")
+                if sz is not None:
+                    try:
+                        total_bytes += int(sz)
+                    except Exception:
+                        unknown_size += 1
+                else:
+                    unknown_size += 1
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    return {
+        "total_bytes": total_bytes,
+        "file_count": file_count,
+        "folder_count": folder_count,
+        "unknown_size_count": unknown_size,
+    }
+
+
+# -------------------------
 # Role checks
 # -------------------------
 def require_login():
@@ -637,6 +712,16 @@ def page_gdrive():
         st.info("Pastikan folder dengan ID di-hardcode sudah dishare ke service account sebagai Editor.")
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
+    # Folder usage stats (recursive)
+    try:
+        usage = get_folder_usage_stats(service, folder_id, recursive=True)
+        total_bytes = usage["total_bytes"]
+        st.caption(
+            f"Penggunaan folder (termasuk subfolder): {_format_bytes(total_bytes)} · "
+            f"{usage['file_count']} file · {usage['folder_count']} folder · {usage['unknown_size_count']} tanpa ukuran"
+        )
+    except Exception as e:
+        st.caption(f"Tidak dapat menghitung penggunaan folder: {e}")
 
     tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log", "Record"])
     # Record Tab
