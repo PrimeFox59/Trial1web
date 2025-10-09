@@ -355,17 +355,26 @@ def check_scheduled_backup(service, folder_id=FOLDER_ID_DEFAULT):
 # Auto-restore after autosleep reset detection
 # -------------------------
 def _is_probably_fresh_seed_db():
-    """Heuristik: anggap DB masih fresh bila belum ada project, user <=5 (seed), dan backup_log kosong."""
+    """Heuristik baru: anggap DB fresh bila:
+    - Jumlah user <= 5 (seed default)
+    - backup_log kosong
+    - record_notes kosong (opsional penanda manual)
+    Tidak lagi bergantung pada tabel 'projects' yang sudah dihapus.
+    """
     try:
-        proj_cnt = fetchone("SELECT COUNT(*) c FROM projects")['c']
-        if proj_cnt > 0:
-            return False
         user_cnt = fetchone("SELECT COUNT(*) c FROM users")['c']
         if user_cnt > 5:
             return False
         bkup_cnt = fetchone("SELECT COUNT(*) c FROM backup_log")['c']
         if bkup_cnt > 0:
             return False
+        try:
+            notes_cnt = fetchone("SELECT COUNT(*) c FROM record_notes")['c']
+            if notes_cnt > 0:
+                return False
+        except Exception:
+            # Jika tabel belum ada, abaikan
+            pass
         return True
     except Exception:
         return False
@@ -1017,10 +1026,37 @@ def page_gdrive():
 def main():
     init_db()
 
-    # Reset auto-restore/backup flags on app start (fresh session)
-    for k in ["auto_restore_checked", "auto_backup_checked", "auto_restore_attempted"]:
-        if k in st.session_state and st.session_state.page == "Authentication":
-            del st.session_state[k]
+    # Pre-login auto-restore attempt (hanya sekali per sesi sebelum login)
+    if "prelogin_auto_restore_done" not in st.session_state:
+        # Hanya coba bila auto-restore diaktifkan & DB terindikasi fresh
+        if get_setting('auto_restore_enabled', 'true') == 'true' and _is_probably_fresh_seed_db():
+            try:
+                service_pre, _ = build_drive_service()
+                ok_pre, msg_pre = attempt_auto_restore_if_seed(service_pre, FOLDER_ID_DEFAULT)
+                st.session_state['prelogin_auto_restore_result'] = {
+                    'success': ok_pre,
+                    'message': msg_pre,
+                    'time': datetime.utcnow().isoformat()
+                }
+                # Sinkronkan flag lama agar blok admin tidak mencoba ulang
+                st.session_state['auto_restore_checked'] = 'restored' if ok_pre else 'checked'
+            except Exception as e:
+                st.session_state['prelogin_auto_restore_result'] = {
+                    'success': False,
+                    'message': f'Auto-Restore error: {e}',
+                    'time': datetime.utcnow().isoformat()
+                }
+        else:
+            st.session_state['prelogin_auto_restore_result'] = {
+                'success': False,
+                'message': 'Lewati auto-restore (tidak diaktifkan atau DB tidak fresh)',
+                'time': datetime.utcnow().isoformat()
+            }
+        st.session_state['prelogin_auto_restore_done'] = True
+        # Tampilkan halaman status restore terlebih dahulu
+        st.session_state.page = 'RestoreStatus'
+    
+    # Reset flags lama jika user kembali ke halaman login setelah selesai
     if "page" not in st.session_state:
         st.session_state.page = "Authentication"
     if "user" not in st.session_state:
@@ -1033,7 +1069,7 @@ def main():
     st.sidebar.image("logo.png", use_container_width=True)
     st.sidebar.title("Navigasi")
 
-    if not user:
+    if not user and st.session_state.page != 'RestoreStatus':
         if st.sidebar.button("🔐 Login / Register", use_container_width=True):
             st.session_state.page = "Authentication"
     else:
@@ -1105,6 +1141,21 @@ def main():
         st.sidebar.button("🚪 Logout", on_click=logout_user, use_container_width=True)
         st.sidebar.markdown("---")
     
+    # Halaman status restore (sebelum login) bila baru saja wake & mencoba restore
+    if st.session_state.page == 'RestoreStatus' and not user:
+        st.title('⏳ Memeriksa / Memulihkan Database')
+        res = st.session_state.get('prelogin_auto_restore_result', {})
+        if res.get('success'):
+            st.success(f"Berhasil restore otomatis: {res.get('message','')} ")
+        else:
+            st.info(res.get('message','Tidak ada informasi restore.'))
+        st.caption(f"Waktu: {res.get('time','-')}")
+        st.markdown('---')
+        if st.button('Lanjut ke Login »', type='primary'):
+            st.session_state.page = 'Authentication'
+            st.rerun()
+        return
+
     if not user:
         page_auth()
         return
