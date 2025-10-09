@@ -1036,36 +1036,45 @@ def main():
         st.sidebar.markdown(f"**Role:** {user['role'].capitalize()}")
         st.sidebar.markdown("---")
 
-        # Jalankan auto-restore & auto/dijadwalkan backup tetap dipertahankan (opsional bagian dari fitur G Drive)
-        if user.get('role') == 'admin' and 'auto_restore_done' not in st.session_state:
-            try:
-                service_ar, _ = build_drive_service()
-                ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
-                if ok_ar:
-                    st.sidebar.success(f"Auto-Restore: {msg_ar}")
-                    st.session_state['auto_restore_done'] = True
-                    st.rerun()
-                else:
-                    st.sidebar.caption(f"Auto-Restore: {msg_ar}")
-                    st.session_state['auto_restore_done'] = True
-            except Exception as e:
-                st.sidebar.caption(f"Auto-Restore Err: {e}")
-                st.session_state['auto_restore_done'] = True
 
-        if user.get('role') == 'admin' and 'auto_backup_checked' not in st.session_state:
-            try:
-                if _is_probably_fresh_seed_db():
-                    st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
-                else:
-                    service_ab, _ = build_drive_service()
-                    ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
-                    if ok_ab:
-                        st.sidebar.success(f"Auto Backup: {msg_ab}")
+        # --- Refactored: Auto-Restore runs before Auto-Backup ---
+        if user.get('role') == 'admin':
+            # 1. Auto-Restore: only once per session after reboot
+            if 'auto_restore_checked' not in st.session_state:
+                try:
+                    service_ar, _ = build_drive_service()
+                    ok_ar, msg_ar = attempt_auto_restore_if_seed(service_ar, FOLDER_ID_DEFAULT)
+                    if ok_ar:
+                        st.sidebar.success(f"Auto-Restore: {msg_ar}")
+                        st.session_state['auto_restore_checked'] = 'restored'
+                        st.rerun()
                     else:
-                        st.sidebar.caption(f"Auto Backup: {msg_ab}")
-            except Exception as e:
-                st.sidebar.caption(f"Auto Backup Err: {e}")
-            st.session_state['auto_backup_checked'] = True
+                        st.sidebar.caption(f"Auto-Restore: {msg_ar}")
+                        st.session_state['auto_restore_checked'] = 'checked'
+                except Exception as e:
+                    st.sidebar.caption(f"Auto-Restore Err: {e}")
+                    st.session_state['auto_restore_checked'] = 'error'
+            # 2. Auto-Backup: only if restore did NOT just happen
+            if st.session_state.get('auto_restore_checked') == 'restored':
+                # Just restored, skip backup for this session
+                st.sidebar.caption("Auto Backup: dilewati (baru saja restore)")
+                st.session_state['auto_backup_checked'] = 'skipped'
+            elif 'auto_backup_checked' not in st.session_state:
+                try:
+                    if _is_probably_fresh_seed_db():
+                        st.sidebar.caption("Auto Backup: dilewati (DB masih fresh/seed)")
+                        st.session_state['auto_backup_checked'] = 'skipped'
+                    else:
+                        service_ab, _ = build_drive_service()
+                        ok_ab, msg_ab = auto_daily_backup(service_ab, FOLDER_ID_DEFAULT)
+                        if ok_ab:
+                            st.sidebar.success(f"Auto Backup: {msg_ab}")
+                        else:
+                            st.sidebar.caption(f"Auto Backup: {msg_ab}")
+                        st.session_state['auto_backup_checked'] = 'done'
+                except Exception as e:
+                    st.sidebar.caption(f"Auto Backup Err: {e}")
+                    st.session_state['auto_backup_checked'] = 'error'
 
         if user.get('role') == 'admin':
             if 'scheduled_backup_last_check' not in st.session_state or (datetime.utcnow().timestamp() - st.session_state['scheduled_backup_last_check'] > 60):
