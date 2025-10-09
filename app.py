@@ -712,16 +712,6 @@ def page_gdrive():
         st.info("Pastikan folder dengan ID di-hardcode sudah dishare ke service account sebagai Editor.")
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
-    # Folder usage stats (recursive)
-    try:
-        usage = get_folder_usage_stats(service, folder_id, recursive=True)
-        total_bytes = usage["total_bytes"]
-        st.caption(
-            f"Penggunaan folder (termasuk subfolder): {_format_bytes(total_bytes)} · "
-            f"{usage['file_count']} file · {usage['folder_count']} folder · {usage['unknown_size_count']} tanpa ukuran"
-        )
-    except Exception as e:
-        st.caption(f"Tidak dapat menghitung penggunaan folder: {e}")
 
     tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log", "Record", "Drive Usage"])
     # Record Tab
