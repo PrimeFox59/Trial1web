@@ -72,7 +72,7 @@ def init_db():
         message TEXT,
         backup_time TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
-        # audit_logs (log user login events)
+    # audit_logs (log user login events)
     c.execute("""
     CREATE TABLE IF NOT EXISTS audit_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +81,15 @@ def init_db():
         details TEXT,
         timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    """)
+    # record_notes (catatan manual untuk cek DB restore)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS record_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        note TEXT,
+        created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """)
     conn.commit()
@@ -616,7 +625,40 @@ def page_gdrive():
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
 
-    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log"])
+    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log", "Record"])
+    # Record Tab
+    with tabs[6]:
+        st.subheader('📝 Record Catatan Manual')
+        user = current_user()
+        # Add new note
+        with st.form('add_note_form'):
+            new_note = st.text_input('Catatan baru', key='new_note_input')
+            submitted = st.form_submit_button('Tambah Catatan')
+            if submitted and new_note.strip():
+                execute("INSERT INTO record_notes (note, created_by) VALUES (?, ?)", (new_note.strip(), user['email'] if user else '-'))
+                st.success('Catatan ditambahkan.')
+                st.experimental_rerun()
+        # List notes
+        notes = fetchall("SELECT * FROM record_notes ORDER BY id DESC LIMIT 50")
+        if not notes:
+            st.info('Belum ada catatan.')
+        else:
+            df_notes = pd.DataFrame(notes)
+            st.dataframe(df_notes[['id','note','created_by','created_at']], use_container_width=True, hide_index=True)
+            # Edit/delete per row
+            for idx, row in enumerate(notes):
+                col1, col2 = st.columns([2,1])
+                with col1:
+                    edit_val = st.text_input(f"Edit Catatan #{row['id']}", value=row['note'], key=f"edit_note_{row['id']}")
+                with col2:
+                    if st.button(f"Simpan Edit #{row['id']}", key=f"save_edit_{row['id']}"):
+                        execute("UPDATE record_notes SET note=? WHERE id=?", (edit_val.strip(), row['id']))
+                        st.success('Catatan diperbarui.')
+                        st.experimental_rerun()
+                    if st.button(f"Hapus #{row['id']}", key=f"delete_note_{row['id']}"):
+                        execute("DELETE FROM record_notes WHERE id=?", (row['id'],))
+                        st.warning('Catatan dihapus.')
+                        st.experimental_rerun()
 
     # List Tab
     with tabs[0]:
