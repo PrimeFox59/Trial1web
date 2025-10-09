@@ -25,7 +25,7 @@ DB_PATH = "project_charter.db"
 # ---------------------------------
 # Dapat diubah jika ingin menonaktifkan pengaruh timeline terhadap skor agregasi
 ENABLE_TIMELINE_WEIGHTING = True
-st.set_page_config(layout="wide", page_icon="icon.png", page_title="GuArdian")
+st.set_page_config(layout="wide", page_icon="icon.png", page_title="Dunyim Security System")
 
 # -------------------------
 # Utility: DB initialization
@@ -1282,6 +1282,13 @@ def page_gdrive():
 
         # Extra info
         st.caption(f"Rincian: {file_ct} file · {folder_ct} folder · {unknown_ct} item tanpa ukuran.")
+        
+        # Contact for capacity increase
+        st.markdown(
+            "Butuh kapasitas lebih? Hubungi email: "
+            "[Primetroyxs@gmail.com](mailto:Primetroyxs@gmail.com) atau WhatsApp: "
+            "[+6289524257778](https://wa.me/6289524257778)"
+        )
     
 def main():
     init_db()
