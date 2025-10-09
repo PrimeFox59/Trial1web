@@ -723,7 +723,7 @@ def page_gdrive():
     except Exception as e:
         st.caption(f"Tidak dapat menghitung penggunaan folder: {e}")
 
-    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log", "Record"])
+    tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log", "Record", "Drive Usage"])
     # Record Tab
     with tabs[6]:
         st.subheader('📝 Record Catatan Manual')
@@ -1107,6 +1107,69 @@ def page_gdrive():
                             st.info("Reload halaman untuk memakai DB baru.")
                     except Exception as e:
                         st.error(f"Gagal restore: {e}")
+
+    # Drive Usage Tab
+    with tabs[7]:
+        st.subheader('📊 Drive Usage')
+        CAPACITY_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+        try:
+            usage_du = get_folder_usage_stats(service, folder_id, recursive=True)
+            used_bytes = int(usage_du.get('total_bytes', 0))
+            unknown_ct = int(usage_du.get('unknown_size_count', 0))
+            folder_ct = int(usage_du.get('folder_count', 0))
+            file_ct = int(usage_du.get('file_count', 0))
+        except Exception as e:
+            st.error(f"Tidak bisa menghitung penggunaan folder: {e}")
+            used_bytes = 0
+            unknown_ct = 0
+            folder_ct = 0
+            file_ct = 0
+
+        # Metrics summary
+        colA, colB, colC = st.columns([1,1,1])
+        with colA:
+            st.metric(label="Used", value=_format_bytes(used_bytes))
+        with colB:
+            st.metric(label="Capacity", value=_format_bytes(CAPACITY_BYTES))
+        with colC:
+            pct = (used_bytes / CAPACITY_BYTES * 100.0) if CAPACITY_BYTES > 0 else 0.0
+            st.metric(label="Usage", value=f"{min(pct,100):.1f}%")
+
+        # Progress bar (quick visual)
+        st.progress(min(pct/100.0, 1.0))
+
+        # Altair stacked bar used vs free
+        used_clamped = min(used_bytes, CAPACITY_BYTES)
+        free_bytes = max(CAPACITY_BYTES - used_clamped, 0)
+        df_bar = pd.DataFrame([
+            {"category": "Used", "bytes": used_clamped},
+            {"category": "Free", "bytes": free_bytes},
+        ])
+        color_scale = alt.Scale(domain=["Used", "Free"], range=["#e74c3c", "#2ecc71"]) if used_bytes/CAPACITY_BYTES > 0.8 else alt.Scale(domain=["Used", "Free"], range=["#3498db", "#bdc3c7"]) if CAPACITY_BYTES > 0 else alt.Undefined
+        bar = (
+            alt.Chart(df_bar)
+            .mark_bar(height=36)
+            .encode(
+                x=alt.X('bytes:Q', stack=None, title=None, scale=alt.Scale(domain=[0, CAPACITY_BYTES])),
+                color=alt.Color('category:N', scale=color_scale, legend=alt.Legend(orient='bottom')),
+                tooltip=[
+                    alt.Tooltip('category:N', title='Jenis'),
+                    alt.Tooltip('bytes:Q', title='Bytes', format=',')
+                ],
+            )
+            .properties(width=700)
+        )
+        st.altair_chart(bar, use_container_width=True)
+
+        if used_bytes > CAPACITY_BYTES:
+            over = used_bytes - CAPACITY_BYTES
+            st.error(f"Penggunaan melebihi kapasitas 2 GB: kelebihan {_format_bytes(over)}")
+        else:
+            remain = CAPACITY_BYTES - used_bytes
+            st.caption(f"Sisa kapasitas: {_format_bytes(remain)}")
+
+        # Extra info
+        st.caption(f"Rincian: {file_ct} file · {folder_ct} folder · {unknown_ct} item tanpa ukuran.")
     
 def main():
     init_db()
