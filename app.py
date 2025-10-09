@@ -25,7 +25,7 @@ DB_PATH = "project_charter.db"
 # ---------------------------------
 # Dapat diubah jika ingin menonaktifkan pengaruh timeline terhadap skor agregasi
 ENABLE_TIMELINE_WEIGHTING = True
-st.set_page_config(layout="wide", page_icon="icon.png", page_title="Guardian")
+st.set_page_config(layout="wide", page_icon="icon.png", page_title="GuArdian")
 
 # -------------------------
 # Utility: DB initialization
@@ -110,9 +110,6 @@ def init_db():
         users_to_seed = [
             {"name": "Admin", "email": "admin", "password": "admin123", "role": "admin", "department": "Management", "approved": 1},
             {"name": "Rendy", "email": "rendy", "password": "pass123", "role": "user", "department": "IT", "approved": 1},
-            {"name": "Ammar", "email": "ammar", "password": "pass123", "role": "user", "department": "IT", "approved": 1},
-            {"name": "Budi", "email": "budi", "password": "pass123", "role": "user", "department": "Humas", "approved": 1},
-            {"name": "Dita", "email": "dita", "password": "pass123", "role": "user", "department": "Finance", "approved": 1},
         ]
         
         for user in users_to_seed:
@@ -198,6 +195,19 @@ def set_setting(key, value):
     cur.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
     conn.commit()
     conn.close()
+    
+def get_project_capacity_bytes(default_bytes: int = 2 * 1024 * 1024 * 1024) -> int:
+    """Ambil kapasitas maksimum proyek (bytes) dari app_settings.
+    Jika belum ada, gunakan default 2GB.
+    Key: project_capacity_bytes
+    """
+    val = get_setting('project_capacity_bytes')
+    try:
+        if val is None:
+            return int(default_bytes)
+        return int(val)
+    except Exception:
+        return int(default_bytes)
 
 # -------------------------
 # Backup helpers
@@ -209,6 +219,21 @@ def perform_backup(service, folder_id=FOLDER_ID_DEFAULT):
     """
     if not os.path.exists(DB_PATH):
         return False, f"Database '{DB_PATH}' tidak ditemukan." 
+    # Cek kapasitas sebelum upload backup baru (timestamped -> tambah ukuran)
+    try:
+        db_size = os.path.getsize(DB_PATH)
+    except Exception:
+        db_size = 0
+    try:
+        usage_now = get_folder_usage_stats(service, folder_id, recursive=True)
+        used_bytes_now = int(usage_now.get('total_bytes', 0))
+    except Exception:
+        used_bytes_now = 0
+    capacity = get_project_capacity_bytes()
+    if used_bytes_now >= capacity:
+        return False, "Gagal backup: kapasitas maksimum tercapai (exceed/max capacity)."
+    if used_bytes_now + db_size > capacity:
+        return False, "Gagal backup: ukuran backup akan melebihi kapasitas maksimum (exceed)."
     ts = time.strftime('%Y%m%d_%H%M%S')
     backup_name = f"auto_backup_{ts}.sqlite"
     try:
@@ -335,6 +360,24 @@ def check_scheduled_backup(service, folder_id=FOLDER_ID_DEFAULT):
     try:
         with open(DB_PATH,'rb') as f:
             data = f.read()
+        # Catatan: Scheduled backup overwrite (nama tetap) -> tidak menambah jumlah file.
+        # Namun tetap pastikan tidak melebihi kapasitas jika file sebelumnya tidak ada (first time).
+        try:
+            usage_now = get_folder_usage_stats(service, folder_id, recursive=True)
+            used_bytes_now = int(usage_now.get('total_bytes', 0))
+        except Exception:
+            used_bytes_now = 0
+        capacity = get_project_capacity_bytes()
+        # Cek apakah file dengan nama yang sama sudah ada (overwrite diperbolehkan meski full)
+        exists_query = f"name='{base_name}' and '{folder_id}' in parents and trashed=false"
+        exists_resp = service.files().list(q=exists_query, spaces='drive', fields='files(id, size)', supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        existing_files = exists_resp.get('files', [])
+        if not existing_files:
+            # First time create -> akan menambah ukuran
+            if used_bytes_now >= capacity:
+                return False, 'Scheduled backup dibatalkan: kapasitas maksimum tercapai.'
+            if used_bytes_now + len(data) > capacity:
+                return False, 'Scheduled backup dibatalkan: ukuran backup melebihi kapasitas.'
         fid = upload_or_replace(service, folder_id, base_name, data, mimetype='application/x-sqlite3')
         if fid:
             set_setting('scheduled_backup_last_slot', slot)
@@ -363,7 +406,7 @@ def _is_probably_fresh_seed_db():
     """
     try:
         user_cnt = fetchone("SELECT COUNT(*) c FROM users")['c']
-        if user_cnt > 5:
+        if user_cnt > 2:
             return False
         bkup_cnt = fetchone("SELECT COUNT(*) c FROM backup_log")['c']
         if bkup_cnt > 0:
@@ -712,6 +755,19 @@ def page_gdrive():
         st.info("Pastikan folder dengan ID di-hardcode sudah dishare ke service account sebagai Editor.")
         return
     st.markdown(f"Aktif Folder: **{meta.get('name')}** (`{folder_id}`)")
+    
+    # Banner kapasitas
+    try:
+        usage_head = get_folder_usage_stats(service, folder_id, recursive=True)
+        used_head = int(usage_head.get('total_bytes', 0))
+    except Exception:
+        used_head = 0
+    capacity = get_project_capacity_bytes()
+    if used_head >= capacity:
+        st.error("Kapasitas proyek mencapai batas maksimum 2GB (exceed/max capacity). Nonaktifkan upload/backup sampai ada ruang.")
+    else:
+        remain_head = capacity - used_head
+        st.caption(f"Penggunaan: {_format_bytes(used_head)} / {_format_bytes(capacity)} · Sisa: {_format_bytes(remain_head)}")
 
     tabs = st.tabs(["List", "Upload file", "Download", "Delete", "Sync DB", "Audit Log", "Record", "Drive Usage"])
     # Record Tab
@@ -952,6 +1008,19 @@ def page_gdrive():
                 try:
                     with open(DB_PATH,'rb') as f:
                         data = f.read()
+                    # Check capacity before creating a new timestamped backup file
+                    try:
+                        usage_now = get_folder_usage_stats(service, folder_id, recursive=True)
+                        used_now = int(usage_now.get('total_bytes', 0))
+                    except Exception:
+                        used_now = 0
+                    cap = get_project_capacity_bytes()
+                    if used_now >= cap:
+                        st.error("Gagal upload: kapasitas maksimum tercapai (exceed/max capacity).")
+                        return
+                    if used_now + len(data) > cap:
+                        st.error("Gagal upload: ukuran backup akan melebihi kapasitas maksimum.")
+                        return
                     backup_name = f"backup_db_{time.strftime('%Y%m%d_%H%M%S')}.sqlite"
                     fid = upload_bytes(service, folder_id, backup_name, data, mimetype='application/x-sqlite3')
                     if fid:
@@ -969,9 +1038,21 @@ def page_gdrive():
         uploaded = st.file_uploader('Pilih file')
         if uploaded and st.button('Upload ke Drive'):
             data = uploaded.read()
-            fid = upload_bytes(service, folder_id, uploaded.name, data, mimetype=uploaded.type or 'application/octet-stream')
-            if fid:
-                st.success(f"File '{uploaded.name}' terupload (ID: {fid})")
+            # Capacity guard: adding a new file increases usage
+            try:
+                usage_now = get_folder_usage_stats(service, folder_id, recursive=True)
+                used_now = int(usage_now.get('total_bytes', 0))
+            except Exception:
+                used_now = 0
+            cap = get_project_capacity_bytes()
+            if used_now >= cap:
+                st.error("Upload dibatalkan: kapasitas maksimum tercapai (exceed/max capacity).")
+            elif used_now + len(data) > cap:
+                st.error("Upload dibatalkan: file ini akan melebihi kapasitas maksimum.")
+            else:
+                fid = upload_bytes(service, folder_id, uploaded.name, data, mimetype=uploaded.type or 'application/octet-stream')
+                if fid:
+                    st.success(f"File '{uploaded.name}' terupload (ID: {fid})")
 
     # Download Tab
     with tabs[2]:
@@ -1101,7 +1182,7 @@ def page_gdrive():
     # Drive Usage Tab
     with tabs[7]:
         st.subheader('📊 Drive Usage')
-        CAPACITY_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+        CAPACITY_BYTES = get_project_capacity_bytes()  # default 2 GB
         try:
             usage_du = get_folder_usage_stats(service, folder_id, recursive=True)
             used_bytes = int(usage_du.get('total_bytes', 0))
@@ -1151,9 +1232,12 @@ def page_gdrive():
         )
         st.altair_chart(bar, use_container_width=True)
 
-        if used_bytes > CAPACITY_BYTES:
-            over = used_bytes - CAPACITY_BYTES
-            st.error(f"Penggunaan melebihi kapasitas 2 GB: kelebihan {_format_bytes(over)}")
+        if used_bytes >= CAPACITY_BYTES:
+            over = max(used_bytes - CAPACITY_BYTES, 0)
+            if over > 0:
+                st.error(f"Penggunaan melebihi kapasitas: kelebihan {_format_bytes(over)} (exceed)")
+            else:
+                st.error("Penggunaan mencapai batas maksimum (max capacity).")
         else:
             remain = CAPACITY_BYTES - used_bytes
             st.caption(f"Sisa kapasitas: {_format_bytes(remain)}")
