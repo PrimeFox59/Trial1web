@@ -147,6 +147,23 @@ def login_user(user_row):
     st.session_state["user"] = dict(user_row)
 
 def logout_user():
+    # Lakukan backup saat logout (jika kredensial tersedia)
+    try:
+        if "service_account" in st.secrets:
+            service, _ = build_drive_service()
+            ok, msg = perform_backup(service, FOLDER_ID_DEFAULT)
+            st.session_state['last_logout_backup'] = {
+                'ok': ok,
+                'msg': msg,
+                'time': datetime.utcnow().isoformat()
+            }
+    except Exception as e:
+        st.session_state['last_logout_backup'] = {
+            'ok': False,
+            'msg': f'Backup saat logout gagal: {e}',
+            'time': datetime.utcnow().isoformat()
+        }
+    # Bersihkan sesi user setelah mencoba backup
     if "user" in st.session_state:
         del st.session_state["user"]
     # Reset auto-restore/backup flags on logout
@@ -705,6 +722,27 @@ def page_auth():
                     login_user(row)
                     # Catat audit trail login
                     execute("INSERT INTO audit_logs (user_id, action, details) VALUES (?,?,?)", (row['id'], "LOGIN", f"User {row['email']} login."))
+                    # Backup on successful login (best-effort)
+                    try:
+                        if "service_account" in st.secrets:
+                            service_b, _ = build_drive_service()
+                            ok_b, msg_b = perform_backup(service_b, FOLDER_ID_DEFAULT)
+                            st.session_state['last_login_backup'] = {
+                                'ok': ok_b,
+                                'msg': msg_b,
+                                'time': datetime.utcnow().isoformat()
+                            }
+                            # Tampilkan info singkat tanpa menghalangi redirect
+                            if ok_b:
+                                st.toast("Backup otomatis saat login berhasil.")
+                            else:
+                                st.toast("Backup saat login gagal atau dibatalkan.")
+                    except Exception as e:
+                        st.session_state['last_login_backup'] = {
+                            'ok': False,
+                            'msg': f'Backup saat login error: {e}',
+                            'time': datetime.utcnow().isoformat()
+                        }
                     st.session_state.login_status_message = {"type": "success", "text": "Login berhasil. Mengalihkan..."}
                     st.session_state.page = "Dashboard" 
                     st.rerun() 
