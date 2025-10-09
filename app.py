@@ -236,7 +236,9 @@ def perform_backup(service, folder_id=FOLDER_ID_DEFAULT):
     """
     if not os.path.exists(DB_PATH):
         return False, f"Database '{DB_PATH}' tidak ditemukan." 
-    # Cek kapasitas sebelum upload backup baru (timestamped -> tambah ukuran)
+    # Nama file backup auto (overwrite, bukan timestamp) agar tidak menumpuk
+    base_name = get_setting('auto_backup_filename', 'auto_backup.sqlite') or 'auto_backup.sqlite'
+    # Cek kapasitas: jika file belum ada, menambah ukuran; jika sudah ada, overwrite diperbolehkan
     try:
         db_size = os.path.getsize(DB_PATH)
     except Exception:
@@ -247,27 +249,34 @@ def perform_backup(service, folder_id=FOLDER_ID_DEFAULT):
     except Exception:
         used_bytes_now = 0
     capacity = get_project_capacity_bytes()
-    if used_bytes_now >= capacity:
-        return False, "Gagal backup: kapasitas maksimum tercapai (exceed/max capacity)."
-    if used_bytes_now + db_size > capacity:
-        return False, "Gagal backup: ukuran backup akan melebihi kapasitas maksimum (exceed)."
-    ts = time.strftime('%Y%m%d_%H%M%S')
-    backup_name = f"auto_backup_{ts}.sqlite"
+    # Cek apakah file dengan nama yang sama sudah ada (overwrite diperbolehkan meski full)
+    try:
+        exists_query = f"name='{base_name}' and '{folder_id}' in parents and trashed=false"
+        exists_resp = service.files().list(q=exists_query, spaces='drive', fields='files(id, size)', supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        existing_files = exists_resp.get('files', [])
+    except Exception:
+        existing_files = []
+    if not existing_files:
+        # First time create -> akan menambah ukuran
+        if used_bytes_now >= capacity:
+            return False, "Gagal backup: kapasitas maksimum tercapai (exceed/max capacity)."
+        if used_bytes_now + db_size > capacity:
+            return False, "Gagal backup: ukuran backup akan melebihi kapasitas maksimum (exceed)."
     try:
         with open(DB_PATH, 'rb') as f:
             data = f.read()
-        fid = upload_bytes(service, folder_id, backup_name, data, mimetype='application/x-sqlite3')
+        fid = upload_or_replace(service, folder_id, base_name, data, mimetype='application/x-sqlite3')
         if fid:
             execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
-                    (backup_name, fid, 'SUCCESS', ''))
-            return True, f"Backup sukses: {backup_name} (ID: {fid})"
+                    (base_name, fid, 'SUCCESS', 'overwrite' if existing_files else 'created'))
+            return True, f"Backup sukses: {base_name} (ID: {fid})"
         else:
             execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
-                    (backup_name, None, 'FAILED', 'Upload gagal'))
+                    (base_name, None, 'FAILED', 'Upload gagal'))
             return False, "Upload Drive gagal." 
     except Exception as e:
         execute("INSERT INTO backup_log (file_name, drive_file_id, status, message) VALUES (?,?,?,?)",
-                (backup_name, None, 'FAILED', str(e)))
+                (base_name, None, 'FAILED', str(e)))
         return False, f"Gagal backup: {e}" 
 
 def auto_daily_backup(service, folder_id=FOLDER_ID_DEFAULT):
