@@ -399,7 +399,7 @@ def check_scheduled_backup(service, folder_id=FOLDER_ID_DEFAULT):
 # -------------------------
 def _is_probably_fresh_seed_db():
     """Heuristik baru: anggap DB fresh bila:
-    - Jumlah user <= 5 (seed default)
+    - Jumlah user <= 2 (seed default)
     - backup_log kosong
     - record_notes kosong (opsional penanda manual)
     Tidak lagi bergantung pada tabel 'projects' yang sudah dihapus.
