@@ -1,11 +1,7 @@
 google-auth
 google-api-python-client
-streamlit
-pandas
-python-dateutil
-altair
 streamlit==1.31.0
 pandas==2.1.4
+python-dateutil
 altair==5.2.0
 pytz==2024.1
-
